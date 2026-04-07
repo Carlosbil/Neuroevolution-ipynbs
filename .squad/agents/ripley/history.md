@@ -43,6 +43,34 @@ Refactor `test_simplified.ipynb` to use modular Python scripts while maintaining
 
 ## Learnings
 
+### README Rewrite to Current Reality (2026-04-08)
+
+**Task**: Rewrite README.md in Spanish to reflect post-refactorization project state  
+**Status**: ✅ Complete
+
+**Deliverable**: Updated `README.md` (2,100+ lines, 9 major sections)
+
+**Key Changes**:
+- Added header highlighting refactorization: "notebooks ahora actúan como orquestadores ligeros"
+- New section: "Estructura del proyecto (post-refactorización)" with 7-module breakdown (26 .py files, ~78 KB)
+- New section: "Flujo de ejecución: orquestación con módulos" (pseudocode execution diagram)
+- New section: "Testing (post-refactorización)" with pytest examples and 4-level validation strategy
+- New section: "Decisiones arquitectónicas" explaining 5 key choices (orchestrator, NEAT UUID, ThreadPoolExecutor, 3-tier validation, device singleton)
+- New section: "Cómo ejecutar" with notebook + Python script examples
+- Removed stale content (e.g., "todo el pipeline en notebooks", vague data layouts)
+- Updated "Estatus del proyecto" to reflect actual state (refactorization complete, tests operational)
+
+**Documentation Quality**:
+- Spanish throughout (matches project convention)
+- Accurate module references (neuroevolution/ package structure verified)
+- Testing guidance (pytest markers, artifact location, tolerance levels)
+- Researcher-friendly (GPU memory notes, reproducibility, variants, checkpoint safety)
+- Actionable (can execute immediately after reading)
+
+**Decision Record**: Merged `.squad/decisions/inbox/ripley-readme-refactored-state.md` → decisions.md as Decision #8
+
+---
+
 ### Session Summary (2026-04-07)
 
 **Orchestration Plan Delivered** (770-line reference document):

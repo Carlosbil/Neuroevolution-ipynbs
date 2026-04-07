@@ -152,6 +152,34 @@ Resolved two critical testing issues:
 
 ---
 
+### 8. README Rewritten to Reflect Post-Refactorization State
+**Date**: 2026-04-08  
+**Author**: Ripley  
+**Status**: Completed  
+**Category**: Documentation  
+
+The project completed a major refactorization from monolithic 3,800-line notebooks to thin orchestrators coordinating modular Python packages. README.md updated to reflect this architectural shift with accurate, actionable documentation.
+
+**Changes Made**:
+- **Header highlight**: "Código refactorizado... notebooks ahora actúan como orquestadores ligeros"
+- **Project structure**: 7-module package breakdown (26 .py files, ~78 KB)
+- **Execution flow**: Pseudocode showing notebook → module coordination
+- **Testing section**: pytest infrastructure, 4-level validation pyramid, tolerance levels
+- **Architectural decisions**: 5 key design choices with explicit rationale
+- **Execution guide**: Notebook vs. Python script examples with runnable code
+- **Removed stale content**: References to monolithic notebook implementations
+
+**Quality Assurance**:
+- ✅ Spanish throughout (project convention)
+- ✅ Accurate module references and testing guidance
+- ✅ Researcher-friendly (GPU memory, reproducibility, variants, checkpoint safety)
+- ✅ Actionable (executable immediately after reading)
+- ✅ Architectural decisions documented with full rationale
+
+**Impact**: Onboarding faster, architecture preserved, testing usage enabled, prevents future drift on orchestrator pattern.
+
+---
+
 ## Archived Decisions
 
 _Decisions older than 30 days will be moved here._
