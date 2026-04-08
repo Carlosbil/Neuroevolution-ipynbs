@@ -144,6 +144,51 @@ class HybridNeuroevolution:
         genome['innovation_genes'] = build_innovation_genes(genome)
         return genome
 
+    def _create_double_cap_individual(self) -> dict:
+        """Creates one individual using doubled layer caps for the current generation."""
+        base_conv_cap = max(
+            self.config['min_conv_layers'],
+            self.config.get('current_max_conv_layers', self.config['max_conv_layers'])
+        )
+        base_fc_cap = max(
+            self.config['min_fc_layers'],
+            self.config.get('current_max_fc_layers', self.config['max_fc_layers'])
+        )
+
+        target_conv_layers = min(self.config['max_conv_layers'], base_conv_cap * 2)
+        target_fc_layers = min(self.config['max_fc_layers'], base_fc_cap * 2)
+
+        max_safe_conv_layers = int(np.log2(self.config['sequence_length'] / 4))
+        target_conv_layers = max(
+            self.config['min_conv_layers'],
+            min(target_conv_layers, max_safe_conv_layers)
+        )
+        target_fc_layers = max(self.config['min_fc_layers'], target_fc_layers)
+
+        boosted_config = copy.deepcopy(self.config)
+        boosted_config['current_max_conv_layers'] = target_conv_layers
+        boosted_config['current_max_fc_layers'] = target_fc_layers
+
+        genome = create_random_genome(boosted_config)
+        genome['num_conv_layers'] = target_conv_layers
+        genome['num_fc_layers'] = target_fc_layers
+        genome = validate_and_fix_genome(genome, boosted_config)
+        genome['innovation_genes'] = build_innovation_genes(genome)
+        genome['id'] = str(uuid.uuid4())[:8]
+        genome['fitness'] = 0.0
+
+        append_structural_event(
+            genome,
+            'double_cap_seed',
+            {
+                'base_conv_cap': int(base_conv_cap),
+                'base_fc_cap': int(base_fc_cap),
+                'target_conv_layers': int(genome['num_conv_layers']),
+                'target_fc_layers': int(genome['num_fc_layers'])
+            }
+        )
+        return genome
+
     def compatibility_distance(self, g1: dict, g2: dict) -> float:
         """Combines topology differences and innovation mismatch for speciation."""
         topo = (
@@ -205,8 +250,15 @@ class HybridNeuroevolution:
             f"conv<={self.config['current_max_conv_layers']}, fc<={self.config['current_max_fc_layers']}"
         )
 
+        reserve_double_cap_slot = self.config['population_size'] > 1
+        regular_population_size = (
+            self.config['population_size'] - 1
+            if reserve_double_cap_slot
+            else self.config['population_size']
+        )
+
         self.population = []
-        for i in range(self.config['population_size']):
+        for i in range(regular_population_size):
             genome = create_random_genome(self.config)
 
             # Start from simple networks and grow gradually
@@ -227,6 +279,9 @@ class HybridNeuroevolution:
             genome['id'] = str(uuid.uuid4())[:8]
             genome['fitness'] = 0.0
             self.population.append(genome)
+
+        if reserve_double_cap_slot:
+            self.population.append(self._create_double_cap_individual())
 
         print(f"Population initialized with {len(self.population)} individuals")
 
@@ -435,7 +490,15 @@ class HybridNeuroevolution:
         
         # Sort by fitness
         self.population.sort(key=lambda x: x['fitness'], reverse=True)
+        reserve_double_cap_slot = self.config['population_size'] > 1
+        regular_target_size = (
+            self.config['population_size'] - 1
+            if reserve_double_cap_slot
+            else self.config['population_size']
+        )
+
         elite_size = max(1, int(self.config['population_size'] * self.config['elite_percentage']))
+        elite_size = min(elite_size, regular_target_size)
         elite = self.population[:elite_size]
         
         print(f"Selecting {elite_size} elite individuals:")
@@ -443,29 +506,31 @@ class HybridNeuroevolution:
             print(f"   Elite {i+1}: {individual['id']} (fitness: {individual['fitness']:.2f}%)")
         
         new_population = copy.deepcopy(elite)
-        offspring_needed = self.config['population_size'] - len(new_population)
+        offspring_needed = regular_target_size - len(new_population)
         
         print(f"Creating {offspring_needed} new individuals through crossover and mutation...")
         offspring_created = 0
         
-        while len(new_population) < self.config['population_size']:
+        while len(new_population) < regular_target_size:
             parent1 = self.tournament_selection()
             parent2 = self.tournament_selection()
             child1, child2 = crossover_genomes(parent1, parent2, self.config)
             child1 = mutate_genome(child1, self.config)
             
-            if len(new_population) < self.config['population_size']:
+            if len(new_population) < regular_target_size:
                 new_population.append(child1)
             
             child2 = mutate_genome(child2, self.config)
-            if len(new_population) < self.config['population_size']:
+            if len(new_population) < regular_target_size:
                 new_population.append(child2)
             
             offspring_created += 2
             if offspring_created % 4 == 0:
                 print(f"   Created {min(offspring_created, offspring_needed)} of {offspring_needed} new individuals...")
         
-        self.population = new_population[:self.config['population_size']]
+        self.population = new_population[:regular_target_size]
+        if reserve_double_cap_slot:
+            self.population.append(self._create_double_cap_individual())
         
         print(f"New generation created with {len(self.population)} individuals")
         print(f"   Elite preserved: {elite_size}")
@@ -629,8 +694,9 @@ class HybridNeuroevolution:
                 break
             
             self._update_adaptive_mutation()
-            self.selection_and_reproduction()
             self.generation += 1
+            self._update_incremental_complexity()
+            self.selection_and_reproduction()
             print(f"\nPreparing for next generation...")
         
         print(f"\n{'='*80}")

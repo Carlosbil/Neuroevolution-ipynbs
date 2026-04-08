@@ -215,3 +215,4 @@ __marimo__/
 .squad-workstream
 /.github/agents
 /.github/workflows
+/artifacts
