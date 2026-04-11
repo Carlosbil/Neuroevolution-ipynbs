@@ -14,6 +14,7 @@ Applies when evaluating many genomes sequentially is slow, but each genome alrea
 - Resolve pool sizes with safe caps (CPU cores, GPU availability) and fallback to sequential when only one worker is possible.
 - Maintain two ThreadPoolExecutors (GPU + CPU) and submit tasks from separate queues.
 - Log per-pool remaining counts after each completion to track progress.
+- Document worker semantics (one worker == one individual job) and per-pool/per-device caps in config and engine docstrings/logs.
 
 ## Examples
 - `neuroevolution/evolution/engine.py`: `_resolve_individual_pool_config()` and `_evaluate_population_parallel()` implement dual pools and progress logs.

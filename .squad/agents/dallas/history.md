@@ -176,3 +176,29 @@ neuroevolution/
 - Created `.squad/log/2026-04-11_123758-concurrency-pools.md` (session overview)
 
 **Status**: Implementation complete and validated. Ready for artifact generation and regression testing phase.
+
+### Documentation Clarity Update (2026-04-11)
+
+- Clarified GPU/CPU pool semantics in config and engine comments/docstrings.
+- Explicitly documented worker-to-individual mapping, per-pool caps, per-device GPU limits, and default 4+6 concurrency.
+- Added logging wording to make parallelism behavior unambiguous during runs.
+
+### Session Archive: Concurrency Comments Clarification (2026-04-11)
+
+**Requested by**: Carlosbil  
+**Session Spawn**: Dallas (background) — clarified concurrency comments/docstrings without changing behavior
+
+**Work Completed**:
+- Reviewed existing comments and docstrings in `neuroevolution/config.py` and `neuroevolution/evolution/engine.py`
+- Verified all worker semantics documentation (1 worker = 1 individual, not per-device)
+- Confirmed GPU/CPU pool separation and caps are correctly documented
+- Verified logging statements clearly show remaining individuals per pool
+- No behavior changes; purely documentation clarification for clarity
+
+**Documentation Updated**:
+- config.py: Comments clarified pool worker semantics (worker count ≠ device count)
+- engine.py: Docstrings updated to explain dual pool behavior, non-blocking scheduling, adaptive caps
+- Logging comments: Per-pool remaining tracking explained
+
+**Files**: `neuroevolution/config.py`, `neuroevolution/evolution/engine.py`  
+**Status**: ✅ COMPLETE — All comments verified and clarified

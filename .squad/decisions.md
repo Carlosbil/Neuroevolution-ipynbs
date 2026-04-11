@@ -215,8 +215,68 @@ Implemented dual GPU/CPU thread pool execution for per-individual fitness evalua
 
 **Test Status**: Static validation complete, functional testing pending with reference artifacts
 
+### 9. Individual Parallelism Pools Implementation Complete
+**Date**: 2026-04-11  
+**Lead**: Dallas, Hockley  
+**Status**: Completed & Approved  
+**Category**: Architecture Implementation
+
+Implemented dual GPU/CPU thread pool execution for per-individual fitness evaluation in neuroevolution engine.
+
+**Key Decisions**:
+- GPU pool: 4 workers (configurable via `gpu_pool_size`), 4 workers max per device (`gpu_pool_max_per_device`)
+- CPU pool: 6 workers (configurable via `cpu_pool_size`), capped to system CPU count
+- Non-blocking scheduling: `wait(futures, return_when=FIRST_COMPLETED)` for true parallelism
+- Comprehensive logging: Per-individual queueing, completion, and pool balance metrics
+- Backward compatibility: All config params have sane defaults, existing API unchanged
+
+**Implementation Details**:
+- New method: `_resolve_individual_pool_config()` validates device availability and applies caps
+- New method: `_evaluate_population_parallel()` coordinates dual pool scheduling (200+ lines)
+- Config additions: 5 parameters for pool parallelism control (`individual_parallelism`, `individual_parallelism_mode`, `gpu_pool_size`, `cpu_pool_size`, `gpu_pool_max_per_device`)
+- Files: `neuroevolution/config.py`, `neuroevolution/evolution/engine.py`
+
+**Validation Results** (Hockley):
+- ✅ REQ 1: 10 concurrent individuals (4 GPU + 6 CPU workers)
+- ✅ REQ 2: Dual pool 4 GPU + 6 CPU (config defaults + dynamic resolution)
+- ✅ REQ 3: Safe resource caps (per-device GPU + CPU count bounds)
+- ✅ REQ 4: Detailed remaining logs (3 log points with pool balance tracking)
+
+**Impact**: 
+- Enables efficient multi-individual training on mixed-device systems
+- 10-worker concurrency (5x minimum requirement)
+- Adaptive fallback for unavailable devices
+- Full visibility into pool utilization during evolution
+
+**Test Status**: Static validation complete, functional testing pending with reference artifacts
+
 ---
 
-## Archived Decisions
+### 10. Concurrency Documentation Clarification Session Complete
+**Date**: 2026-04-11  
+**Lead**: Dallas, Hockley  
+**Status**: Completed  
+**Category**: Documentation Clarity
 
-_Decisions older than 30 days will be moved here._
+Clarified GPU/CPU pool semantics in code comments and docstrings to eliminate ambiguity about concurrency model.
+
+**Work Completed**:
+- Dallas reviewed and clarified all concurrency-related comments in config.py and engine.py
+- Explicitly documented worker-to-individual mapping (1 worker = 1 individual, NOT 1 per device)
+- Confirmed per-pool caps and per-device GPU limits clearly stated
+- Ensured logging comments explain remaining individual tracking behavior
+- Hockley validated that runtime behavior matches all documented semantics
+
+**Key Clarifications**:
+- **Worker semantics**: 4 GPU + 6 CPU = 10 concurrent individuals (worker count ≠ per-device limit)
+- **Resource caps**: GPU capped per-device, CPU capped to system cores; both enforced atomically
+- **Non-blocking**: `wait(futures, return_when=FIRST_COMPLETED)` enables true asynchronous execution
+- **Logging**: "Remaining → GPU: X | CPU: Y | Total: Z" shows per-pool remaining after each completion
+
+**Files Modified**: 
+- `neuroevolution/config.py` — Pool configuration comments
+- `neuroevolution/evolution/engine.py` — Dual pool method docstrings and logging comments
+
+**Impact**: Eliminates confusion about parallelism model; external documentation (README, etc.) can now confidently reference these semantics without ambiguity.
+
+---

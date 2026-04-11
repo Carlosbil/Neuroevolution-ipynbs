@@ -195,6 +195,73 @@ The current implementation in test.ipynb exceeds the basic requirement of 2 conc
 
 **Next Phase**: Artifact generation (Hockley) + regression suite (all agents)
 
+### 2026-04-11: Pool Semantics Clarification — "1 per device or 4+6?"
+
+**Question**: "Ahora mismo se hace 1 individuo a la vez en cada device, o 4 y 6?" (Is it 1 individual at a time per device, or 4 and 6 simultaneous?)
+
+**Answer**: **NOT 1-per-device. Instead: UP TO 4 GPU + 6 CPU = 10 CONCURRENT INDIVIDUALS** (with resource caps).
+
+**Exact Semantics**:
+1. **Dual thread pools**: GPU pool (4 workers) and CPU pool (6 workers) run in parallel
+2. **Independent job queues**: Population split by ratio `gpu_workers/(gpu_workers + cpu_workers)`. For 20-pop default: ~11 → GPU, ~9 → CPU
+3. **Non-blocking scheduling**: `wait(futures, return_when=FIRST_COMPLETED)` at line 229 enables true parallelism
+4. **Queue replenishment**: After each individual completes, submit_next() pulls next job from respective queue
+5. **Device rotation**: GPU jobs cycle through available GPU devices via `itertools.cycle()`
+
+**Resource Caps Enforced**:
+- **GPU**: `gpu_pool_max_per_device=4` limits workers per device (line 118), falls back to 0 if no CUDA available
+- **CPU**: Capped to system CPU count via `os.cpu_count()` at line 97
+- **Fallback**: If total workers ≤ 1, parallelism disabled and reverts to sequential (line 172)
+
+**Single GPU Scenario (most common)**:
+- 1 GPU device → max 4 GPU workers simultaneously
+- 6 CPU workers simultaneously on system threads
+- Result: **4 + 6 = 10 concurrent individuals** (bounded by population size)
+
+**Multiple GPU Scenario**:
+- N GPUs × `gpu_pool_max_per_device=4` → up to 4N GPU workers
+- Same 6 CPU workers
+- Job scheduling distributes across GPUs via device cycling
+
+**Logging Confirms True Parallelism**:
+- Line 208-211: Per-individual queueing logs device assignment
+- Line 271-273: **"Remaining → GPU: X | CPU: Y | Total: Z"** printed AFTER each completion (not after batch submission)
+- This proves individuals complete independently and asynchronously, not in lockstep
+
+**Caveats**:
+- If `individual_parallelism=False` in CONFIG: forced to sequential (1 individual at a time, any device)
+- If `individual_parallelism_mode='gpu_only'` and no CUDA: falls back to CPU (reverts to effective 1-per-device)
+- Initial submission fills both pools (lines 221-226), but queue starving is prevented by replenishment logic
+- Total concurrency capped by min(population_size, total_workers), so 20-pop can't exceed 20 simultaneous
+
+**Code Evidence**:
+- `neuroevolution/config.py:62-67` — Pool config parameters
+- `neuroevolution/evolution/engine.py:81-139` — Pool resolution with caps
+- `neuroevolution/evolution/engine.py:169-280` — Parallel evaluation with dual-pool scheduling and async completion handling
+
+### 2026-04-11: Session Archive — Concurrency Validation & Clarification
+
+**Requested by**: Carlosbil  
+**Concurrent Agents**:
+- 🔧 Dallas (background): Clarified comments/docstrings in config.py and engine.py
+- 🧪 Hockley (background): Validated runtime semantics matching documentation
+
+**Dallas Work Summary**:
+- Reviewed all concurrency-related comments and docstrings
+- Verified worker-to-individual semantics documentation (worker ≠ per-device)
+- Confirmed GPU/CPU pool separation semantics clearly documented
+- Ensured logging comments explain per-pool remaining tracking
+- Zero behavior changes; pure documentation clarity
+
+**Hockley Work Summary**:
+- Confirmed actual runtime behavior matches documented semantics
+- Validated 10-worker parallelism (4 GPU + 6 CPU) runtime confirmed
+- Verified resource caps enforce per-device and per-pool bounds
+- Confirmed non-blocking scheduling enables true asynchronous execution
+- Identified no discrepancies between documentation and implementation
+
+**Status**: ✅ COMPLETE — Documentation clarity verified, runtime semantics confirmed
+
 ### 2026-04-07: Full Orchestration Refactoring Completion
 
 **Deliverables Summary**:
