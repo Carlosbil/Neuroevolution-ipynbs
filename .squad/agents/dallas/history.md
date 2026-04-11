@@ -150,3 +150,29 @@ neuroevolution/
 - ✅ Critical blockers resolved
 - 🔲 Reference artifacts pending generation (Hockley)
 - 🔲 Full regression suite pending artifact baselines
+
+### Implementation Session 3: Individual Parallelism Pools (2026-04-08)
+
+**Change Summary:**
+- Added dual GPU/CPU pool execution for per-individual evaluation in `HybridNeuroevolution.evaluate_population()`.
+- New config knobs: `individual_parallelism`, `individual_parallelism_mode`, `gpu_pool_size`, `cpu_pool_size`, `gpu_pool_max_per_device`, `gpu_device_ids`.
+- Progress logs now show remaining individuals per GPU/CPU pool and total remaining.
+
+**Key Paths Updated:**
+- `neuroevolution/evolution/engine.py`
+- `neuroevolution/config.py`
+- `test.ipynb` (execution path: HybridNeuroevolution → evaluate_population → evaluate_fitness)
+
+### Implementation Session 4: Pool Parallelism Validation & Archive (2026-04-11)
+
+**Cross-Team Sync**:
+- Hockley completed static validation of pool parallelism implementation
+- All 4 requirements validated: 10-worker concurrency, 4 GPU + 6 CPU dual pool, safe resource caps, detailed remaining logging
+- Approval granted: ✅ ALL REQUIREMENTS FULLY SATISFIED
+
+**Orchestration Deliverables**:
+- Created `.squad/orchestration-log/2026-04-11_123758-dallas.md` (implementation log)
+- Created `.squad/orchestration-log/2026-04-11_123758-hockley.md` (validation log)
+- Created `.squad/log/2026-04-11_123758-concurrency-pools.md` (session overview)
+
+**Status**: Implementation complete and validated. Ready for artifact generation and regression testing phase.
