@@ -50,6 +50,7 @@ class HybridNeuroevolution:
         # Early stopping configuration at generation level
         self.generations_without_improvement = 0
         self.best_fitness_overall = -float('inf')
+        self.best_fitness_for_early_stopping = -float('inf')
         self.min_improvement_threshold = config.get('min_improvement_threshold', 0.1)
         self.max_generations_without_improvement = config.get('early_stopping_generations', 10)
 
@@ -94,6 +95,7 @@ class HybridNeuroevolution:
             'generation_stats': self._to_json_serializable(self.generation_stats),
             'generations_without_improvement': self.generations_without_improvement,
             'best_fitness_overall': self.best_fitness_overall,
+            'best_fitness_for_early_stopping': self.best_fitness_for_early_stopping,
             'best_checkpoint_path': self.best_checkpoint_path
         }
 
@@ -116,6 +118,9 @@ class HybridNeuroevolution:
             self.generation_stats = progress_data.get('generation_stats', [])
             self.generations_without_improvement = int(progress_data.get('generations_without_improvement', 0))
             self.best_fitness_overall = float(progress_data.get('best_fitness_overall', -float('inf')))
+            self.best_fitness_for_early_stopping = float(
+                progress_data.get('best_fitness_for_early_stopping', self.best_fitness_overall)
+            )
             self.best_checkpoint_path = progress_data.get('best_checkpoint_path', None)
             return True
         except Exception as e:
@@ -420,6 +425,9 @@ class HybridNeuroevolution:
         if self.best_individual is None or best_genome['fitness'] > self.best_individual['fitness']:
             self.best_individual = copy.deepcopy(best_genome)
 
+        if self.best_individual is not None:
+            self.best_fitness_overall = max(self.best_fitness_overall, self.best_individual['fitness'])
+
         sorted_individuals = sorted(all_individual_metrics, key=lambda x: x['fitness'], reverse=True)
 
         generation_log_lines.append("=" * 100)
@@ -577,10 +585,10 @@ class HybridNeuroevolution:
         # Criterion 3: Early stopping - no improvement in N generations
         if self.generation > 0:
             current_best = self.best_individual['fitness'] if self.best_individual else 0.0
-            improvement = current_best - self.best_fitness_overall
+            improvement = current_best - self.best_fitness_for_early_stopping
             
             if improvement >= self.min_improvement_threshold:
-                self.best_fitness_overall = current_best
+                self.best_fitness_for_early_stopping = current_best
                 self.generations_without_improvement = 0
                 print(f"\n🔄 Improvement detected: {improvement:.2f}% | Generations without improvement: {self.generations_without_improvement}")
             else:
@@ -689,6 +697,7 @@ class HybridNeuroevolution:
             print(f"{'='*80}")
             
             self.evaluate_population()
+            self._save_evolution_progress()
             
             if self.check_convergence():
                 break
