@@ -6,6 +6,7 @@ to run all 5 folds simultaneously. Fitness is calculated as the average F1-score
 """
 
 import os
+import threading
 import numpy as np
 import torch
 import torch.nn as nn
@@ -16,6 +17,72 @@ from typing import Tuple, Dict
 
 from ..models.evolvable_cnn import EvolvableCNN
 from ..config import OPTIMIZERS
+
+_FOLD_DATALOADER_CACHE = {}
+_FOLD_DATALOADER_CACHE_LOCK = threading.Lock()
+
+
+def _resolve_fold_files_directory(config: dict) -> str:
+    """Resolves fold directory from config, preferring explicit subdirectory when available."""
+    fold_subdir = config.get('fold_files_subdirectory', f"files_real_{config['fold_id']}")
+    return os.path.join(config['data_path'], fold_subdir)
+
+
+def _resolve_dataloader_settings(config: dict, device: torch.device) -> Tuple[int, bool, int, bool]:
+    """
+    Resolves DataLoader worker/prefetch settings.
+
+    Returns:
+        Tuple of (num_workers, persistent_workers, prefetch_factor, pin_memory)
+    """
+    configured_workers = config.get('dataloader_num_workers')
+    if configured_workers is None:
+        cpu_count = os.cpu_count() or 1
+        fold_workers = max(1, int(config.get('fold_parallel_workers', config.get('num_folds', 5))))
+        num_workers = max(1, min(4, cpu_count // fold_workers))
+    else:
+        num_workers = max(0, int(configured_workers))
+
+    persistent_workers = bool(config.get('dataloader_persistent_workers', True)) and num_workers > 0
+    prefetch_factor = max(1, int(config.get('dataloader_prefetch_factor', 2)))
+    pin_memory = bool(config.get('dataloader_pin_memory', True)) and device.type == 'cuda'
+    return num_workers, persistent_workers, prefetch_factor, pin_memory
+
+
+def _resolve_cache_mode(config: dict) -> str:
+    """Returns validated fold cache mode."""
+    cache_mode = str(config.get('fold_cache_mode', 'ram')).lower()
+    if cache_mode not in {'none', 'ram', 'memmap'}:
+        cache_mode = 'ram'
+    return cache_mode
+
+
+def _build_fold_cache_key(
+    fold_number: int,
+    config: dict,
+    device: torch.device,
+    cache_mode: str,
+) -> Tuple[str, str, int, int, int, bool, int, bool, str]:
+    """Builds a deterministic cache key for a fold DataLoader pair."""
+    num_workers, persistent_workers, prefetch_factor, pin_memory = _resolve_dataloader_settings(config, device)
+    return (
+        os.path.abspath(_resolve_fold_files_directory(config)),
+        config['dataset_id'],
+        int(fold_number),
+        int(config['batch_size']),
+        num_workers,
+        persistent_workers,
+        prefetch_factor,
+        pin_memory and cache_mode != 'none',
+        cache_mode,
+    )
+
+
+def _load_numpy_array(path: str, cache_mode: str) -> np.ndarray:
+    """Loads a numpy array with optional memmap mode."""
+    if cache_mode == 'memmap':
+        return np.load(path, mmap_mode='r')
+    return np.load(path)
 
 
 def evaluate_fitness(genome: dict, config: dict, device: torch.device) -> Tuple[float, nn.Module, dict]:
@@ -42,17 +109,20 @@ def evaluate_fitness(genome: dict, config: dict, device: torch.device) -> Tuple[
     fold_metrics = {}
 
     try:
-        # Usar ThreadPoolExecutor para ejecutar los 5 folds en paralelo
-        with ThreadPoolExecutor(max_workers=5) as executor:
-            # Enviar los 5 folds a threads separados
-            print("      -> Submitting 5 folds to thread pool...")
+        num_folds = int(config.get('num_folds', 5))
+        fold_workers = max(1, min(int(config.get('fold_parallel_workers', num_folds)), num_folds))
+
+        # Usar ThreadPoolExecutor para ejecutar folds en paralelo
+        with ThreadPoolExecutor(max_workers=fold_workers) as executor:
+            # Enviar folds a threads separados
+            print(f"      -> Submitting {num_folds} folds to thread pool (workers={fold_workers})...")
             futures = {
                 executor.submit(train_fold_in_thread, genome, fold_num, config, device): fold_num
-                for fold_num in range(1, 6)
+                for fold_num in range(1, num_folds + 1)
             }
 
             # Esperar a que todos los folds terminen
-            print("      -> Waiting for all 5 folds to complete...")
+            print(f"      -> Waiting for all {num_folds} folds to complete...")
             for future in as_completed(futures):
                 fold_num, fold_score, model, metrics = future.result()
                 fold_accuracies[fold_num] = fold_score
@@ -168,8 +238,15 @@ def train_fold_in_thread(genome: dict, fold_num: int, config: dict, device: torc
         patience_left = int(config.get('epoch_patience', 10))
         max_epochs = int(config.get('num_epochs', 30))
         improvement_threshold = float(config.get('improvement_threshold', 0.01))
+        validation_frequency = max(1, int(config.get('validation_frequency_epochs', 2)))
 
-        for _ in range(max_epochs):
+        amp_enabled = bool(config.get('use_amp', True)) and device.type == 'cuda'
+        amp_dtype_name = str(config.get('amp_dtype', 'float16')).lower()
+        amp_dtype = torch.bfloat16 if amp_dtype_name == 'bfloat16' else torch.float16
+        autocast_device_type = 'cuda' if device.type == 'cuda' else 'cpu'
+        scaler = torch.amp.GradScaler("cuda", enabled=amp_enabled)
+
+        for epoch_idx in range(max_epochs):
             model.train()
             batch_count = 0
             max_batches = min(len(fold_train_loader), int(config.get('early_stopping_patience', len(fold_train_loader))))
@@ -178,15 +255,26 @@ def train_fold_in_thread(genome: dict, fold_num: int, config: dict, device: torc
                 data = data.to(device, non_blocking=True)
                 target = target.to(device, non_blocking=True)
 
-                optimizer.zero_grad()
-                output = model(data)
-                loss = criterion(output, target)
-                loss.backward()
-                optimizer.step()
+                optimizer.zero_grad(set_to_none=True)
+                with torch.autocast(device_type=autocast_device_type, dtype=amp_dtype, enabled=amp_enabled):
+                    output = model(data)
+                    loss = criterion(output, target)
+
+                if amp_enabled:
+                    scaler.scale(loss).backward()
+                    scaler.step(optimizer)
+                    scaler.update()
+                else:
+                    loss.backward()
+                    optimizer.step()
 
                 batch_count += 1
                 if batch_count >= max_batches:
                     break
+
+            should_validate = ((epoch_idx + 1) % validation_frequency == 0) or (epoch_idx + 1 == max_epochs)
+            if not should_validate:
+                continue
 
             model.eval()
             correct = 0
@@ -195,7 +283,8 @@ def train_fold_in_thread(genome: dict, fold_num: int, config: dict, device: torc
                 for data, target in fold_test_loader:
                     data = data.to(device, non_blocking=True)
                     target = target.to(device, non_blocking=True)
-                    output = model(data)
+                    with torch.autocast(device_type=autocast_device_type, dtype=amp_dtype, enabled=amp_enabled):
+                        output = model(data)
                     _, predicted = torch.max(output, 1)
                     total += target.size(0)
                     correct += (predicted == target).sum().item()
@@ -223,7 +312,8 @@ def train_fold_in_thread(genome: dict, fold_num: int, config: dict, device: torc
             for data, target in fold_test_loader:
                 data = data.to(device, non_blocking=True)
                 target = target.to(device, non_blocking=True)
-                output = model(data)
+                with torch.autocast(device_type=autocast_device_type, dtype=amp_dtype, enabled=amp_enabled):
+                    output = model(data)
                 probs = F.softmax(output, dim=1)
                 _, predicted = torch.max(output, 1)
 
@@ -290,20 +380,63 @@ def load_fold_data(fold_number: int, config: dict, device: torch.device) -> Tupl
     Returns:
         Tuple de (train_loader, test_loader)
     """
-    fold_files_directory = os.path.join(
-        config['data_path'],
-        f"files_real_{config['fold_id']}"
-    )
+    cache_mode = _resolve_cache_mode(config)
+    cache_enabled = cache_mode in {'ram', 'memmap'}
 
+    if not cache_enabled:
+        return _load_fold_data_uncached(fold_number, config, device, cache_mode)
+
+    cache_key = _build_fold_cache_key(fold_number, config, device, cache_mode)
+    with _FOLD_DATALOADER_CACHE_LOCK:
+        cached = _FOLD_DATALOADER_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+
+    loaded = _load_fold_data_uncached(fold_number, config, device, cache_mode)
+    with _FOLD_DATALOADER_CACHE_LOCK:
+        # Avoid duplicate work if another thread loaded the same key in parallel.
+        existing = _FOLD_DATALOADER_CACHE.get(cache_key)
+        if existing is not None:
+            return existing
+        _FOLD_DATALOADER_CACHE[cache_key] = loaded
+        return loaded
+
+
+def _load_fold_data_uncached(
+    fold_number: int,
+    config: dict,
+    device: torch.device,
+    cache_mode: str,
+) -> Tuple[DataLoader, DataLoader]:
+    """Loads fold data and creates DataLoaders without cache lookup."""
+    fold_files_directory = _resolve_fold_files_directory(config)
     dataset_id = config['dataset_id']
 
-    # Cargar datos del fold
-    x_train = np.load(os.path.join(fold_files_directory, f'X_train_{dataset_id}_fold_{fold_number}.npy'))
-    y_train = np.load(os.path.join(fold_files_directory, f'y_train_{dataset_id}_fold_{fold_number}.npy'))
-    x_val = np.load(os.path.join(fold_files_directory, f'X_val_{dataset_id}_fold_{fold_number}.npy'))
-    y_val = np.load(os.path.join(fold_files_directory, f'y_val_{dataset_id}_fold_{fold_number}.npy'))
-    x_test = np.load(os.path.join(fold_files_directory, f'X_test_{dataset_id}_fold_{fold_number}.npy'))
-    y_test = np.load(os.path.join(fold_files_directory, f'y_test_{dataset_id}_fold_{fold_number}.npy'))
+    # Cargar datos del fold (RAM o memmap segun config)
+    x_train = _load_numpy_array(
+        os.path.join(fold_files_directory, f'X_train_{dataset_id}_fold_{fold_number}.npy'),
+        cache_mode,
+    )
+    y_train = _load_numpy_array(
+        os.path.join(fold_files_directory, f'y_train_{dataset_id}_fold_{fold_number}.npy'),
+        cache_mode,
+    )
+    x_val = _load_numpy_array(
+        os.path.join(fold_files_directory, f'X_val_{dataset_id}_fold_{fold_number}.npy'),
+        cache_mode,
+    )
+    y_val = _load_numpy_array(
+        os.path.join(fold_files_directory, f'y_val_{dataset_id}_fold_{fold_number}.npy'),
+        cache_mode,
+    )
+    x_test = _load_numpy_array(
+        os.path.join(fold_files_directory, f'X_test_{dataset_id}_fold_{fold_number}.npy'),
+        cache_mode,
+    )
+    y_test = _load_numpy_array(
+        os.path.join(fold_files_directory, f'y_test_{dataset_id}_fold_{fold_number}.npy'),
+        cache_mode,
+    )
 
     # Reshape si es necesario
     if len(x_train.shape) == 2:
@@ -311,13 +444,13 @@ def load_fold_data(fold_number: int, config: dict, device: torch.device) -> Tupl
         x_val = x_val.reshape((x_val.shape[0], 1, x_val.shape[1]))
         x_test = x_test.reshape((x_test.shape[0], 1, x_test.shape[1]))
 
-    # Convertir a tensores
-    x_train_tensor = torch.FloatTensor(x_train)
-    y_train_tensor = torch.LongTensor(y_train.astype(np.int64))
-    x_val_tensor = torch.FloatTensor(x_val)
-    y_val_tensor = torch.LongTensor(y_val.astype(np.int64))
-    x_test_tensor = torch.FloatTensor(x_test)
-    y_test_tensor = torch.LongTensor(y_test.astype(np.int64))
+    # Convertir a tensores (una vez cuando se activa cache)
+    x_train_tensor = torch.tensor(x_train, dtype=torch.float32)
+    y_train_tensor = torch.tensor(y_train, dtype=torch.long)
+    x_val_tensor = torch.tensor(x_val, dtype=torch.float32)
+    y_val_tensor = torch.tensor(y_val, dtype=torch.long)
+    x_test_tensor = torch.tensor(x_test, dtype=torch.float32)
+    y_test_tensor = torch.tensor(y_test, dtype=torch.long)
 
     # Crear datasets
     train_dataset = torch.utils.data.TensorDataset(x_train_tensor, y_train_tensor)
@@ -325,21 +458,27 @@ def load_fold_data(fold_number: int, config: dict, device: torch.device) -> Tupl
     y_eval = torch.cat([y_val_tensor, y_test_tensor], dim=0)
     test_dataset = torch.utils.data.TensorDataset(x_eval, y_eval)
 
+    num_workers, persistent_workers, prefetch_factor, pin_memory = _resolve_dataloader_settings(config, device)
+    loader_kwargs = {
+        'batch_size': config['batch_size'],
+        'num_workers': num_workers,
+        'pin_memory': pin_memory,
+    }
+    if num_workers > 0:
+        loader_kwargs['persistent_workers'] = persistent_workers
+        loader_kwargs['prefetch_factor'] = prefetch_factor
+
     # Crear DataLoaders
     fold_train_loader = DataLoader(
         train_dataset,
-        batch_size=config['batch_size'],
         shuffle=True,
-        num_workers=0,
-        pin_memory=True if torch.cuda.is_available() else False
+        **loader_kwargs,
     )
 
     fold_test_loader = DataLoader(
         test_dataset,
-        batch_size=config['batch_size'],
         shuffle=False,
-        num_workers=0,
-        pin_memory=True if torch.cuda.is_available() else False
+        **loader_kwargs,
     )
 
     return fold_train_loader, fold_test_loader

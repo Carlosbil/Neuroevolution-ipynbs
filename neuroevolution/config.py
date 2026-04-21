@@ -72,6 +72,17 @@ def get_default_config(info_path: str = None) -> dict:
         'num_epochs': 100,
         'learning_rate': 0.00001,
         'early_stopping_patience': 100000,
+        'use_amp': True,
+        'amp_dtype': 'float16',
+        'validation_frequency_epochs': 2,
+
+        # Fold evaluation and data loading performance
+        'fold_parallel_workers': 5,
+        'fold_cache_mode': 'ram',  # Options: 'none', 'ram', 'memmap'
+        'dataloader_num_workers': None,  # Auto when None
+        'dataloader_persistent_workers': True,
+        'dataloader_prefetch_factor': 2,
+        'dataloader_pin_memory': True,
         
         # Epoch-level early stopping
         'epoch_patience': 10,
@@ -161,6 +172,23 @@ def validate_config(config: dict) -> None:
         raise ValueError("num_classes must be at least 2")
     if config['batch_size'] < 1:
         raise ValueError("batch_size must be at least 1")
+
+    # Performance-related parameters
+    if int(config.get('validation_frequency_epochs', 1)) < 1:
+        raise ValueError("validation_frequency_epochs must be at least 1")
+    if int(config.get('fold_parallel_workers', 1)) < 1:
+        raise ValueError("fold_parallel_workers must be at least 1")
+
+    fold_cache_mode = str(config.get('fold_cache_mode', 'ram')).lower()
+    if fold_cache_mode not in {'none', 'ram', 'memmap'}:
+        raise ValueError("fold_cache_mode must be one of: 'none', 'ram', 'memmap'")
+
+    dataloader_num_workers = config.get('dataloader_num_workers')
+    if dataloader_num_workers is not None and int(dataloader_num_workers) < 0:
+        raise ValueError("dataloader_num_workers must be >= 0 or None")
+
+    if int(config.get('dataloader_prefetch_factor', 1)) < 1:
+        raise ValueError("dataloader_prefetch_factor must be at least 1")
 
 
 # Global constants - exported for convenience
