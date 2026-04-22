@@ -1,0 +1,12 @@
+{
+  "schema": "1.0",
+  "universes_used": ["jurassic-park"],
+  "agents": [
+    {"persistent_name": "Hammond","role": "Lead","universe": "jurassic-park","created_at": "2026-04-22","legacy_named": false,"status": "active"},
+    {"persistent_name": "Grant","role": "ML Engineer","universe": "jurassic-park","created_at": "2026-04-22","legacy_named": false,"status": "active"},
+    {"persistent_name": "Sattler","role": "Data/Notebook","universe": "jurassic-park","created_at": "2026-04-22","legacy_named": false,"status": "active"},
+    {"persistent_name": "Malcolm","role": "Tester","universe": "jurassic-park","created_at": "2026-04-22","legacy_named": false,"status": "active"},
+    {"persistent_name": "Scribe","role": "Session Logger","universe": "exempt","created_at": "2026-04-22","legacy_named": false,"status": "active"},
+    {"persistent_name": "Ralph","role": "Work Monitor","universe": "exempt","created_at": "2026-04-22","legacy_named": false,"status": "active"}
+  ]
+}
