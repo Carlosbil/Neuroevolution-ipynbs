@@ -1,3 +1,0 @@
-"""
-Neural network models package.
-"""
