@@ -16,12 +16,18 @@ def setup_notebook_logging(log_dir: str, log_filename: str = "execution_log.txt"
     Sets up logging to redirect print() to a file.
     
     Args:
-        log_dir: Directory to store log files
-        log_filename: Name of the log file
+        log_dir: Directory to store log files, or full path to a .txt log file
+        log_filename: Name of the log file when log_dir is a directory
     
     Returns:
         Configured logger instance
     """
+    log_dir = os.fspath(log_dir)
+    log_basename = os.path.basename(log_dir).lower()
+    if log_filename == "execution_log.txt" and log_basename.endswith((".txt", ".log")):
+        log_dir, log_filename = os.path.split(log_dir)
+        log_dir = log_dir or "."
+
     os.makedirs(log_dir, exist_ok=True)
     logger = logging.getLogger("neuroevolution_notebook")
     
@@ -40,8 +46,13 @@ def setup_notebook_logging(log_dir: str, log_filename: str = "execution_log.txt"
     logger.addHandler(handler)
     logger.propagate = False
     
-    # Override print() to write to logger
+    original_print = getattr(builtins, "_neuroevolution_original_print", builtins.print)
+    if not hasattr(builtins, "_neuroevolution_original_print"):
+        builtins._neuroevolution_original_print = original_print
+
+    # Override print() to write to logger while preserving notebook/console output.
     def notebook_print(*args, sep=" ", end="\n", **kwargs):
+        original_print(*args, sep=sep, end=end, **kwargs)
         message = sep.join(str(arg) for arg in args)
         if end not in ("", "\n"):
             message += end

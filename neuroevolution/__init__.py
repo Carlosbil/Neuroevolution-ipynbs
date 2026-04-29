@@ -16,7 +16,7 @@ from .config import (
     get_default_config,
     validate_config,
 )
-from .device_utils import setup_device_and_seeds, get_device
+from .device_utils import setup_device_and_seeds, setup_device, setup_seeds, get_device
 from .logger import setup_notebook_logging, verify_dependencies, install_package
 
 # Data loading
@@ -62,8 +62,6 @@ from .visualization.plots import (
 from .visualization.reports import display_best_architecture, print_checkpoint_info
 
 # Backward-compatible aliases
-setup_device = setup_device_and_seeds
-setup_seeds = setup_device_and_seeds
 setup_logging = setup_notebook_logging
 install_packages = verify_dependencies
 select_parents = select_population
