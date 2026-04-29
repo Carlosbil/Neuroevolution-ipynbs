@@ -254,6 +254,7 @@ class HybridNeuroevolution:
             f"Incremental caps at generation {self.generation}: "
             f"conv<={self.config['current_max_conv_layers']}, fc<={self.config['current_max_fc_layers']}"
         )
+        print("Using mixed quartile initialization for initial population depth ranges.")
 
         reserve_double_cap_slot = self.config['population_size'] > 1
         regular_population_size = (
@@ -263,24 +264,46 @@ class HybridNeuroevolution:
         )
 
         self.population = []
+        max_safe_conv_layers = int(np.log2(self.config['sequence_length'] / 4))
+        min_conv_layers = int(self.config['min_conv_layers'])
+        min_fc_layers = int(self.config['min_fc_layers'])
+
         for i in range(regular_population_size):
-            genome = create_random_genome(self.config)
+            # Quartiles: Q1 -> 25% of max depth caps, Q2 -> 50%, Q3 -> 75%, Q4 -> 100%.
+            quartile_index = min(3, (4 * i) // max(1, regular_population_size))
+            quartile_number = quartile_index + 1
 
-            # Start from simple networks and grow gradually
-            genome['num_conv_layers'] = self.config['min_conv_layers']
-            genome['num_fc_layers'] = self.config['min_fc_layers']
-            genome = validate_and_fix_genome(genome, self.config)
+            conv_quartile_cap = int(np.ceil((quartile_number / 4.0) * self.config['max_conv_layers']))
+            fc_quartile_cap = int(np.ceil((quartile_number / 4.0) * self.config['max_fc_layers']))
 
-            if i % 3 == 0 and random.random() < self.config['incremental_growth_probability']:
-                if genome['num_conv_layers'] < self.config['current_max_conv_layers']:
-                    genome['num_conv_layers'] += 1
-                    append_structural_event(genome, 'init_add_conv_layer', {'index_in_population': i})
-                elif genome['num_fc_layers'] < self.config['current_max_fc_layers']:
-                    genome['num_fc_layers'] += 1
-                    append_structural_event(genome, 'init_add_fc_layer', {'index_in_population': i})
-                genome = validate_and_fix_genome(genome, self.config)
+            conv_quartile_cap = max(min_conv_layers, min(conv_quartile_cap, max_safe_conv_layers))
+            fc_quartile_cap = max(min_fc_layers, fc_quartile_cap)
 
-            genome = self._enforce_complexity_caps(genome)
+            quartile_config = copy.deepcopy(self.config)
+            quartile_config['current_max_conv_layers'] = conv_quartile_cap
+            quartile_config['current_max_fc_layers'] = fc_quartile_cap
+
+            genome = create_random_genome(quartile_config)
+
+            # Force layer counts to remain inside the quartile range requested by the user.
+            genome['num_conv_layers'] = random.randint(min_conv_layers, conv_quartile_cap)
+            genome['num_fc_layers'] = random.randint(min_fc_layers, fc_quartile_cap)
+            genome = validate_and_fix_genome(genome, quartile_config)
+            genome['innovation_genes'] = build_innovation_genes(genome)
+
+            append_structural_event(
+                genome,
+                'quartile_init',
+                {
+                    'index_in_population': i,
+                    'quartile': quartile_number,
+                    'conv_cap': conv_quartile_cap,
+                    'fc_cap': fc_quartile_cap,
+                    'num_conv_layers': int(genome['num_conv_layers']),
+                    'num_fc_layers': int(genome['num_fc_layers'])
+                }
+            )
+
             genome['id'] = str(uuid.uuid4())[:8]
             genome['fitness'] = 0.0
             self.population.append(genome)
