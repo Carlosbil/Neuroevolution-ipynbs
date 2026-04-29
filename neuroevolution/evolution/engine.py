@@ -397,9 +397,25 @@ class HybridNeuroevolution:
                 f"optimizer={genome['optimizer']}, learning_rate={genome['learning_rate']}"
             )
 
-            fitness, model, metrics = evaluate_fitness(genome, self.config, self.device)
-            genome['fitness'] = fitness
-            genome['metrics'] = metrics
+            skip_evaluation = bool(genome.pop('skip_next_evaluation', False))
+            cached_metrics = genome.get('metrics')
+            if skip_evaluation and cached_metrics is not None:
+                fitness = float(genome.get('fitness', 0.0))
+                metrics = cached_metrics
+                model = None
+                evaluation_status = 'cached_elite'
+                cached_from_generation = genome.pop('cached_from_generation', self.generation - 1)
+                print(
+                    f"      Skipping training: elite selected in generation {cached_from_generation} "
+                    f"keeps cached fitness {fitness:.2f}%"
+                )
+            else:
+                genome.pop('cached_from_generation', None)
+                fitness, model, metrics = evaluate_fitness(genome, self.config, self.device)
+                genome['fitness'] = fitness
+                genome['metrics'] = metrics
+                evaluation_status = 'trained'
+
             fitness_scores.append(fitness)
 
             individual_summary = {
@@ -408,7 +424,8 @@ class HybridNeuroevolution:
                 'architecture': f"{genome['num_conv_layers']}conv+{genome['num_fc_layers']}fc",
                 'optimizer': genome['optimizer'],
                 'lr': genome['learning_rate'],
-                'metrics': metrics
+                'metrics': metrics,
+                'evaluation_status': evaluation_status
             }
             all_individual_metrics.append(individual_summary)
 
@@ -422,7 +439,8 @@ class HybridNeuroevolution:
 
             generation_log_lines.append(
                 f"Individual {i+1}/{len(self.population)} | ID={genome['id']} | "
-                f"fitness={fitness:.2f}% | best_gen={best_fitness_so_far:.2f}% | global_best={current_global_best_fitness:.2f}%"
+                f"status={evaluation_status} | fitness={fitness:.2f}% | "
+                f"best_gen={best_fitness_so_far:.2f}% | global_best={current_global_best_fitness:.2f}%"
             )
 
         if fitness_scores:
@@ -518,6 +536,7 @@ class HybridNeuroevolution:
     def selection_and_reproduction(self):
         """Selects best individuals and creates new generation through crossover and mutation."""
         print(f"\nStarting selection and reproduction...")
+        self.config['current_generation'] = self.generation
         
         # Sort by fitness
         self.population.sort(key=lambda x: x['fitness'], reverse=True)
@@ -530,13 +549,17 @@ class HybridNeuroevolution:
 
         elite_size = max(1, int(self.config['population_size'] * self.config['elite_percentage']))
         elite_size = min(elite_size, regular_target_size)
-        elite = self.population[:elite_size]
+        elite = []
         
         print(f"Selecting {elite_size} elite individuals:")
-        for i, individual in enumerate(elite):
+        for i, individual in enumerate(self.population[:elite_size]):
             print(f"   Elite {i+1}: {individual['id']} (fitness: {individual['fitness']:.2f}%)")
+            elite_individual = copy.deepcopy(individual)
+            elite_individual['skip_next_evaluation'] = True
+            elite_individual['cached_from_generation'] = self.generation
+            elite.append(elite_individual)
         
-        new_population = copy.deepcopy(elite)
+        new_population = elite
         offspring_needed = regular_target_size - len(new_population)
         
         print(f"Creating {offspring_needed} new individuals through crossover and mutation...")
@@ -729,6 +752,7 @@ class HybridNeuroevolution:
             self.generation += 1
             self._update_incremental_complexity()
             self.selection_and_reproduction()
+            self._save_evolution_progress()
             print(f"\nPreparing for next generation...")
         
         print(f"\n{'='*80}")

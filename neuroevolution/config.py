@@ -54,6 +54,7 @@ def get_default_config(info_path: str = None) -> dict:
         'mutation_rate_min': 0.10,
         'mutation_rate_max': 0.80,
         'current_mutation_rate': 0.25,
+        'structural_mutation_generation_factor': 0.5,
         
         'crossover_rate': 0.99,
         'elite_percentage': 0.2,
