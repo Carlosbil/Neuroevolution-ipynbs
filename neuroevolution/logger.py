@@ -1,7 +1,8 @@
 """
 Custom logging utilities for notebook execution.
 
-Redirects print() output to log files while maintaining console output.
+Redirects print() output to log files. Notebook/console echo is disabled by
+default so long runs keep their output in artifacts instead of notebook cells.
 """
 
 import builtins
@@ -11,13 +12,18 @@ import subprocess
 import sys
 
 
-def setup_notebook_logging(log_dir: str, log_filename: str = "execution_log.txt") -> logging.Logger:
+def setup_notebook_logging(
+    log_dir: str,
+    log_filename: str = "execution_log.txt",
+    echo_to_console: bool = False,
+) -> logging.Logger:
     """
     Sets up logging to redirect print() to a file.
     
     Args:
         log_dir: Directory to store log files, or full path to a .txt log file
         log_filename: Name of the log file when log_dir is a directory
+        echo_to_console: Also print messages to stdout/stderr when True
     
     Returns:
         Configured logger instance
@@ -50,9 +56,10 @@ def setup_notebook_logging(log_dir: str, log_filename: str = "execution_log.txt"
     if not hasattr(builtins, "_neuroevolution_original_print"):
         builtins._neuroevolution_original_print = original_print
 
-    # Override print() to write to logger while preserving notebook/console output.
-    def notebook_print(*args, sep=" ", end="\n", **kwargs):
-        original_print(*args, sep=sep, end=end, **kwargs)
+    # Override print() to write to logger without filling notebook output cells.
+    def notebook_print(*args, sep=" ", end="\n", file=None, flush=False, **kwargs):
+        if echo_to_console or file not in (None, sys.stdout, sys.stderr):
+            original_print(*args, sep=sep, end=end, file=file, flush=flush, **kwargs)
         message = sep.join(str(arg) for arg in args)
         if end not in ("", "\n"):
             message += end
@@ -74,7 +81,22 @@ def install_package(package: str) -> None:
         print(f"OK {package.split('==')[0]} is already installed")
     except ImportError:
         print(f"Installing {package}...")
-        subprocess.check_call([sys.executable, "-m", "pip", "install", package])
+        command = [sys.executable, "-m", "pip", "install", package]
+        logger = logging.getLogger("neuroevolution_notebook")
+        if logger.handlers:
+            result = subprocess.run(
+                command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                check=False,
+            )
+            if result.stdout:
+                for line in result.stdout.rstrip().splitlines():
+                    logger.info(line)
+            result.check_returncode()
+        else:
+            subprocess.check_call(command)
         print(f"OK {package} installed correctly")
 
 

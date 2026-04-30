@@ -95,9 +95,11 @@ def mutate_genome(genome: dict, config: dict) -> dict:
 
         mutation_rate = config['current_mutation_rate']
 
-        # Incremental caps controlled by current generation stage
-        conv_cap = min(config.get('current_max_conv_layers', config['max_conv_layers']), config['max_conv_layers'])
-        fc_cap = min(config.get('current_max_fc_layers', config['max_fc_layers']), config['max_fc_layers'])
+        # Structural mutation uses global config bounds. Incremental caps are only
+        # for initial seeding, otherwise selected deep parents collapse to shallow
+        # children during early generations.
+        conv_cap = int(config['max_conv_layers'])
+        fc_cap = int(config['max_fc_layers'])
 
         # Also enforce architecture safety with sequence length
         sequence_length = config['sequence_length']
@@ -176,8 +178,14 @@ def mutate_genome(genome: dict, config: dict) -> dict:
     for cached_key in ('skip_next_evaluation', 'cached_from_generation', 'metrics', 'evaluation_status'):
         safe_genome.pop(cached_key, None)
 
-    safe_genome['num_conv_layers'] = min(safe_genome['num_conv_layers'], safe_max_conv)
-    safe_genome['num_fc_layers'] = min(safe_genome['num_fc_layers'], fc_cap)
+    safe_genome['num_conv_layers'] = max(
+        config['min_conv_layers'],
+        min(safe_genome['num_conv_layers'], safe_max_conv)
+    )
+    safe_genome['num_fc_layers'] = max(
+        config['min_fc_layers'],
+        min(safe_genome['num_fc_layers'], fc_cap)
+    )
     safe_genome = validate_and_fix_genome(safe_genome, config)
     safe_genome['id'] = str(uuid.uuid4())[:8]
     safe_genome['fitness'] = 0.0

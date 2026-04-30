@@ -85,9 +85,11 @@ def _innovation_aligned_child(dominant_parent: dict, other_parent: dict, config:
     child['num_conv_layers'] = max(config['min_conv_layers'], child['num_conv_layers'])
     child['num_fc_layers'] = max(config['min_fc_layers'], child['num_fc_layers'])
 
-    # Enforce incremental caps
-    child['num_conv_layers'] = min(child['num_conv_layers'], config.get('current_max_conv_layers', config['max_conv_layers']))
-    child['num_fc_layers'] = min(child['num_fc_layers'], config.get('current_max_fc_layers', config['max_fc_layers']))
+    # Keep offspring inside global config bounds. Incremental caps are only used for
+    # initial seeding; applying them here collapses deep selected parents back to
+    # shallow children in early generations.
+    child['num_conv_layers'] = min(child['num_conv_layers'], config['max_conv_layers'])
+    child['num_fc_layers'] = min(child['num_fc_layers'], config['max_fc_layers'])
 
     child = validate_and_fix_genome(child, config)
     child['innovation_genes'] = build_innovation_genes(child)
