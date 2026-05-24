@@ -26,9 +26,13 @@ from .data.loader import load_dataset
 from .models.evolvable_cnn import EvolvableCNN
 from .models.genome_validator import (
     calculate_pooling_operation_count,
+    calculate_inception_branch_channels,
     estimate_genome_parameter_count,
     is_genome_valid,
+    normalize_conv_topology_fields,
+    normalize_inception_fields,
     normalize_residual_fields,
+    stable_genome_signature,
     validate_and_fix_genome,
     calculate_max_safe_conv_layers,
 )
@@ -98,7 +102,10 @@ __all__ = [
     "validate_and_fix_genome",
     "calculate_max_safe_conv_layers",
     "calculate_pooling_operation_count",
+    "calculate_inception_branch_channels",
     "estimate_genome_parameter_count",
+    "normalize_conv_topology_fields",
+    "normalize_inception_fields",
     # Genetics
     "create_random_genome",
     "mutate_genome",
@@ -112,6 +119,7 @@ __all__ = [
     "innovation_uuid",
     "build_innovation_genes",
     "append_structural_event",
+    "stable_genome_signature",
     # Evolution
     "HybridNeuroevolution",
     "evaluate_fitness",

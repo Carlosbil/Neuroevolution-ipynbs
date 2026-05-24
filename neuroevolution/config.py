@@ -125,6 +125,18 @@ def get_default_config(info_path: str = None) -> dict:
         'residual_projection_options': ['auto'],
         'residual_mutation_weight': 0.15,
         'max_model_parameters': None,
+
+        # Inception Conv1D search parameters. The topology weights select one
+        # active Conv1D topology per genome.
+        'conv_topology_weights': {
+            'sequential': 0.45,
+            'residual': 0.30,
+            'inception': 0.25,
+        },
+        'inception_reduction_ratio_options': [0.25, 0.5],
+        'inception_pool_branch_options': [True, False],
+        'inception_min_branch_channels': 1,
+        'inception_mutation_weight': 0.15,
         
         'artifact_dir': info_path,
         'artifacts_dir': info_path,
@@ -223,6 +235,37 @@ def validate_config(config: dict) -> None:
     max_model_parameters = config.get('max_model_parameters')
     if max_model_parameters is not None and int(max_model_parameters) < 1:
         raise ValueError("max_model_parameters must be a positive integer or None")
+
+    # Conv topology and Inception search parameters
+    topology_weights = config.get('conv_topology_weights')
+    if topology_weights is not None:
+        supported_topologies = {'sequential', 'residual', 'inception'}
+        unknown_topologies = set(topology_weights) - supported_topologies
+        if unknown_topologies:
+            raise ValueError("conv_topology_weights contains unsupported topology names")
+        topology_weight_sum = 0.0
+        for topology in supported_topologies:
+            weight = float(topology_weights.get(topology, 0.0))
+            if weight < 0:
+                raise ValueError("conv_topology_weights values must be non-negative")
+            topology_weight_sum += weight
+        if topology_weight_sum <= 0:
+            raise ValueError("At least one conv_topology_weights value must be positive")
+
+    reduction_options = config.get('inception_reduction_ratio_options', [])
+    if not reduction_options or any(float(ratio) <= 0 or float(ratio) > 1 for ratio in reduction_options):
+        raise ValueError("inception_reduction_ratio_options must contain values in (0, 1]")
+
+    pool_options = config.get('inception_pool_branch_options', [])
+    if not pool_options or any(not isinstance(option, bool) for option in pool_options):
+        raise ValueError("inception_pool_branch_options must contain booleans")
+
+    if int(config.get('inception_min_branch_channels', 1)) < 1:
+        raise ValueError("inception_min_branch_channels must be at least 1")
+
+    inception_mutation_weight = float(config.get('inception_mutation_weight', 0.0))
+    if not (0 <= inception_mutation_weight <= 1):
+        raise ValueError("inception_mutation_weight must be between 0 and 1")
 
 
 # Global constants - exported for convenience

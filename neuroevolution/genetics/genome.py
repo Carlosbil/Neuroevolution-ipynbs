@@ -13,6 +13,25 @@ from neuroevolution.models.genome_validator import (
 from neuroevolution.genetics.innovation import build_innovation_genes
 
 
+def _sample_conv_topology(config: dict) -> str:
+    """Samples the active Conv1D topology, preferring the new topology weights."""
+    topology_weights = config.get('conv_topology_weights')
+    if topology_weights:
+        topologies = ['sequential', 'residual', 'inception']
+        weights = [float(topology_weights.get(topology, 0.0)) for topology in topologies]
+        if sum(weights) > 0:
+            return random.choices(topologies, weights=weights)[0]
+
+    residual_enabled = random.choices(
+        [True, False],
+        weights=[
+            config.get('residual_enabled_weight', 0.35),
+            config.get('residual_disabled_weight', 0.65),
+        ],
+    )[0]
+    return 'residual' if residual_enabled else 'sequential'
+
+
 def create_random_genome(config: dict) -> dict:
     """
     Creates a random genome within specified ranges (optimized for 1D audio).
@@ -32,17 +51,17 @@ def create_random_genome(config: dict) -> dict:
     fc_cap = config.get('current_max_fc_layers', config['max_fc_layers'])
 
     while attempt < max_attempts:
+        conv_topology = _sample_conv_topology(config)
         residual_block_options = config.get('residual_block_size_options', [2])
         residual_projection_options = config.get('residual_projection_options', ['auto'])
-        residual_enabled = random.choices(
-            [True, False],
-            weights=[
-                config.get('residual_enabled_weight', 0.35),
-                config.get('residual_disabled_weight', 0.65),
-            ],
-        )[0]
+        inception_reduction_options = config.get('inception_reduction_ratio_options', [0.5])
+        inception_pool_options = config.get('inception_pool_branch_options', [True])
+        residual_enabled = conv_topology == 'residual'
+        inception_enabled = conv_topology == 'inception'
         residual_block_size = random.choice(residual_block_options)
         residual_projection = random.choice(residual_projection_options)
+        inception_reduction_ratio = random.choice(inception_reduction_options)
+        inception_pool_branch = random.choice(inception_pool_options)
 
         # Calculate maximum safe conv layers based on sequence length and
         # selected topology. Residual mode pools per block, so deeper stacks can
@@ -101,9 +120,13 @@ def create_random_genome(config: dict) -> dict:
             'learning_rate': learning_rate,
             'optimizer': optimizer,
             'normalization_type': normalization_type,
+            'conv_topology': conv_topology,
             'residual_enabled': residual_enabled,
             'residual_block_size': residual_block_size,
             'residual_projection': residual_projection,
+            'inception_enabled': inception_enabled,
+            'inception_reduction_ratio': inception_reduction_ratio,
+            'inception_pool_branch': inception_pool_branch,
             'fitness': 0.0,
             'id': str(uuid.uuid4())[:8],
             'structural_history': []
@@ -128,9 +151,13 @@ def create_random_genome(config: dict) -> dict:
         'learning_rate': 0.001,
         'optimizer': 'adam',
         'normalization_type': 'batch',
+        'conv_topology': 'sequential',
         'residual_enabled': False,
         'residual_block_size': 2,
         'residual_projection': 'auto',
+        'inception_enabled': False,
+        'inception_reduction_ratio': 0.5,
+        'inception_pool_branch': True,
         'fitness': 0.0,
         'id': str(uuid.uuid4())[:8],
         'structural_history': []

@@ -6,9 +6,20 @@ import numpy as np
 from typing import Dict, List
 
 
-def _residual_topology_distance(genome1: dict, genome2: dict, config: dict) -> float:
-    """Returns a small normalized distance for residual topology differences."""
-    enabled_distance = 0.0 if bool(genome1.get('residual_enabled', False)) == bool(genome2.get('residual_enabled', False)) else 1.0
+def _active_topology(genome: dict) -> str:
+    """Returns the active Conv1D topology name for distance calculations."""
+    if genome.get('inception_enabled', False):
+        return 'inception'
+    if genome.get('residual_enabled', False):
+        return 'residual'
+    return 'sequential'
+
+
+def _conv_topology_distance(genome1: dict, genome2: dict, config: dict) -> float:
+    """Returns a normalized distance for sequential/residual/Inception topology."""
+    topology1 = _active_topology(genome1)
+    topology2 = _active_topology(genome2)
+    topology_distance = 0.0 if topology1 == topology2 else 1.0
 
     block_options = config.get('residual_block_size_options', [2, 3])
     block_span = max(1, max(block_options) - min(block_options)) if block_options else 1
@@ -17,7 +28,17 @@ def _residual_topology_distance(genome1: dict, genome2: dict, config: dict) -> f
     ) / block_span
 
     projection_distance = 0.0 if str(genome1.get('residual_projection', 'auto')) == str(genome2.get('residual_projection', 'auto')) else 1.0
-    return (enabled_distance + min(1.0, block_distance) + projection_distance) / 3.0
+    residual_distance = (min(1.0, block_distance) + projection_distance) / 2.0 if topology1 == topology2 == 'residual' else 0.0
+
+    reduction_options = config.get('inception_reduction_ratio_options', [0.25, 0.5])
+    reduction_span = max(1e-8, max(reduction_options) - min(reduction_options)) if reduction_options else 1.0
+    reduction_distance = abs(
+        float(genome1.get('inception_reduction_ratio', 0.5)) - float(genome2.get('inception_reduction_ratio', 0.5))
+    ) / reduction_span
+    pool_distance = 0.0 if bool(genome1.get('inception_pool_branch', True)) == bool(genome2.get('inception_pool_branch', True)) else 1.0
+    inception_distance = (min(1.0, reduction_distance) + pool_distance) / 2.0 if topology1 == topology2 == 'inception' else 0.0
+
+    return (topology_distance + residual_distance + inception_distance) / 3.0
 
 
 def calculate_compatibility_distance(genome1: dict, genome2: dict, config: dict) -> float:
@@ -51,9 +72,9 @@ def calculate_compatibility_distance(genome1: dict, genome2: dict, config: dict)
         abs(np.log10(genome1.get('learning_rate', 1e-4)) - np.log10(genome2.get('learning_rate', 1e-4))) / 4.0
     ) / 2.0
 
-    residual = _residual_topology_distance(genome1, genome2, config)
+    conv_topology = _conv_topology_distance(genome1, genome2, config)
 
-    return 0.40 * topo + 0.40 * innovation_mismatch + 0.10 * residual + 0.10 * numeric
+    return 0.40 * topo + 0.40 * innovation_mismatch + 0.10 * conv_topology + 0.10 * numeric
 
 
 def assign_species(population: List[dict], species_dict: Dict, config: dict) -> Dict:

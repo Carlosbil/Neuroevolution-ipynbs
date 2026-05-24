@@ -10,6 +10,17 @@ from neuroevolution.models.genome_validator import is_genome_valid, validate_and
 from neuroevolution.genetics.innovation import build_innovation_genes, append_structural_event
 
 
+def _copy_topology_fields(child: dict, source: dict) -> None:
+    """Copies a complete mutually-exclusive Conv1D topology package."""
+    child['conv_topology'] = source.get('conv_topology', 'sequential')
+    child['residual_enabled'] = source.get('residual_enabled', False)
+    child['residual_block_size'] = source.get('residual_block_size', 2)
+    child['residual_projection'] = source.get('residual_projection', 'auto')
+    child['inception_enabled'] = source.get('inception_enabled', False)
+    child['inception_reduction_ratio'] = source.get('inception_reduction_ratio', 0.5)
+    child['inception_pool_branch'] = source.get('inception_pool_branch', True)
+
+
 def _innovation_aligned_child(dominant_parent: dict, other_parent: dict, config: dict) -> dict:
     """
     Builds one child by aligning homologous genes using innovation_id.
@@ -83,10 +94,8 @@ def _innovation_aligned_child(dominant_parent: dict, other_parent: dict, config:
     if fc_nodes:
         child['fc_nodes'] = fc_nodes
 
-    residual_source = dominant if random.random() < 0.5 else other
-    child['residual_enabled'] = residual_source.get('residual_enabled', False)
-    child['residual_block_size'] = residual_source.get('residual_block_size', 2)
-    child['residual_projection'] = residual_source.get('residual_projection', 'auto')
+    topology_source = dominant if random.random() < 0.5 else other
+    _copy_topology_fields(child, topology_source)
 
     child['num_conv_layers'] = min(len(child.get('filters', [])), len(child.get('kernel_sizes', [])))
     child['num_fc_layers'] = len(child.get('fc_nodes', []))
@@ -110,12 +119,12 @@ def _innovation_aligned_child(dominant_parent: dict, other_parent: dict, config:
         child,
         'innovation_crossover',
         {
-            'dominant_parent': dominant_parent.get('id', 'unknown'),
-            'other_parent': other_parent.get('id', 'unknown'),
-            'num_merged_genes': len(merged_genes),
-            'residual_source_parent': residual_source.get('id', 'unknown')
-        }
-    )
+                'dominant_parent': dominant_parent.get('id', 'unknown'),
+                'other_parent': other_parent.get('id', 'unknown'),
+                'num_merged_genes': len(merged_genes),
+                'topology_source_parent': topology_source.get('id', 'unknown')
+            }
+        )
     return child
 
 

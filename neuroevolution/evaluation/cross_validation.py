@@ -25,6 +25,8 @@ from ..models.evolvable_cnn import EvolvableCNN
 
 def _format_architecture(genome: dict) -> str:
     base = f"{genome['num_conv_layers']}Conv1D+{genome['num_fc_layers']}FC"
+    if genome.get("inception_enabled", False):
+        return f"{base}+Inception"
     if genome.get("residual_enabled", False):
         return f"{base}+Residual{genome.get('residual_block_size', 2)}"
     return base
@@ -265,6 +267,10 @@ def evaluate_5fold_cross_validation(
     if best_genome.get("residual_enabled", False):
         print(f"   Residual Block Size: {best_genome.get('residual_block_size', 2)}")
         print(f"   Residual Projection: {best_genome.get('residual_projection', 'auto')}")
+    print(f"   Inception Enabled: {best_genome.get('inception_enabled', False)}")
+    if best_genome.get("inception_enabled", False):
+        print(f"   Inception Reduction Ratio: {best_genome.get('inception_reduction_ratio', 0.5)}")
+        print(f"   Inception Pool Branch: {best_genome.get('inception_pool_branch', True)}")
     print(f"   Optimizer: {best_genome['optimizer']}")
     print(f"   Learning Rate: {best_genome['learning_rate']}")
     print(f"   Épocas por fold: {num_epochs}")

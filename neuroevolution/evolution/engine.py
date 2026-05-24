@@ -157,6 +157,7 @@ class HybridNeuroevolution:
             min_required_length=4,
             residual_enabled=fixed.get('residual_enabled', False),
             residual_block_size=fixed.get('residual_block_size', 2),
+            inception_enabled=fixed.get('inception_enabled', False),
         )
 
     def _create_double_cap_individual(self) -> dict:
@@ -204,20 +205,42 @@ class HybridNeuroevolution:
         )
         return genome
 
-    def _residual_topology_distance(self, g1: dict, g2: dict) -> float:
-        """Returns a normalized distance for residual topology differences."""
-        enabled_distance = 0.0 if bool(g1.get('residual_enabled', False)) == bool(g2.get('residual_enabled', False)) else 1.0
+    def _active_topology(self, genome: dict) -> str:
+        """Returns the active Conv1D topology name."""
+        if genome.get('inception_enabled', False):
+            return 'inception'
+        if genome.get('residual_enabled', False):
+            return 'residual'
+        return 'sequential'
+
+    def _conv_topology_distance(self, g1: dict, g2: dict) -> float:
+        """Returns a normalized distance for sequential/residual/Inception topology."""
+        topology1 = self._active_topology(g1)
+        topology2 = self._active_topology(g2)
+        topology_distance = 0.0 if topology1 == topology2 else 1.0
+
         block_options = self.config.get('residual_block_size_options', [2, 3])
         block_span = max(1, max(block_options) - min(block_options)) if block_options else 1
         block_distance = abs(
             int(g1.get('residual_block_size', 2)) - int(g2.get('residual_block_size', 2))
         ) / block_span
         projection_distance = 0.0 if str(g1.get('residual_projection', 'auto')) == str(g2.get('residual_projection', 'auto')) else 1.0
-        return (enabled_distance + min(1.0, block_distance) + projection_distance) / 3.0
+        residual_distance = (min(1.0, block_distance) + projection_distance) / 2.0 if topology1 == topology2 == 'residual' else 0.0
+
+        reduction_options = self.config.get('inception_reduction_ratio_options', [0.25, 0.5])
+        reduction_span = max(1e-8, max(reduction_options) - min(reduction_options)) if reduction_options else 1.0
+        reduction_distance = abs(
+            float(g1.get('inception_reduction_ratio', 0.5)) - float(g2.get('inception_reduction_ratio', 0.5))
+        ) / reduction_span
+        pool_distance = 0.0 if bool(g1.get('inception_pool_branch', True)) == bool(g2.get('inception_pool_branch', True)) else 1.0
+        inception_distance = (min(1.0, reduction_distance) + pool_distance) / 2.0 if topology1 == topology2 == 'inception' else 0.0
+        return (topology_distance + residual_distance + inception_distance) / 3.0
 
     def _format_architecture(self, genome: dict) -> str:
         """Formats architecture topology for logs and cached generation summaries."""
         base = f"{genome['num_conv_layers']}conv+{genome['num_fc_layers']}fc"
+        if genome.get('inception_enabled', False):
+            return f"{base}+inc"
         if genome.get('residual_enabled', False):
             return f"{base}+res{genome.get('residual_block_size', 2)}"
         return base
@@ -239,9 +262,9 @@ class HybridNeuroevolution:
             abs(np.log10(g1.get('learning_rate', 1e-4)) - np.log10(g2.get('learning_rate', 1e-4))) / 4.0
         ) / 2.0
 
-        residual = self._residual_topology_distance(g1, g2)
+        conv_topology = self._conv_topology_distance(g1, g2)
 
-        return 0.40 * topo + 0.40 * innovation_mismatch + 0.10 * residual + 0.10 * numeric
+        return 0.40 * topo + 0.40 * innovation_mismatch + 0.10 * conv_topology + 0.10 * numeric
 
     def _speciate_population(self):
         """Assigns genomes to species based on compatibility distance."""

@@ -14,10 +14,13 @@ from typing import Optional
 import torch
 
 from ..models.evolvable_cnn import EvolvableCNN
+from ..models.genome_validator import calculate_inception_branch_channels
 
 
 def _format_architecture(genome: dict) -> str:
     base = f"{genome['num_conv_layers']}Conv1D+{genome['num_fc_layers']}FC"
+    if genome.get("inception_enabled", False):
+        return f"{base}+Inception"
     if genome.get("residual_enabled", False):
         return f"{base}+Residual{genome.get('residual_block_size', 2)}"
     return base
@@ -58,17 +61,34 @@ def display_best_architecture(
     if best_genome.get("residual_enabled", False):
         print(f"   Residual Block Size: {best_genome.get('residual_block_size', 2)}")
         print(f"   Residual Projection: {best_genome.get('residual_projection', 'auto')}")
+    print(f"   Inception Enabled: {best_genome.get('inception_enabled', False)}")
+    if best_genome.get("inception_enabled", False):
+        print(f"   Inception Reduction Ratio: {best_genome.get('inception_reduction_ratio', 0.5)}")
+        print(f"   Inception Pool Branch: {best_genome.get('inception_pool_branch', True)}")
     print(f"   Output: {config['num_classes']} classes")
 
     print("\nCONVOLUTIONAL LAYER DETAILS (1D):")
     residual_enabled = best_genome.get("residual_enabled", False)
     residual_block_size = best_genome.get("residual_block_size", 2)
+    inception_enabled = best_genome.get("inception_enabled", False)
+    inception_pool_branch = best_genome.get("inception_pool_branch", True)
+    min_branch_channels = int(config.get("inception_min_branch_channels", 1))
     for i in range(best_genome["num_conv_layers"]):
         filters = best_genome["filters"][i]
         kernel = best_genome["kernel_sizes"][i]
         activation = best_genome["activations"][i % len(best_genome["activations"])]
         print(f"   Conv1D-{i+1}: {filters} filters, kernel_size={kernel}, activation={activation}")
-        if residual_enabled:
+        if inception_enabled:
+            branch_channels = calculate_inception_branch_channels(
+                filters,
+                pool_branch=inception_pool_branch,
+                min_branch_channels=min_branch_channels,
+            )
+            print(
+                f"             -> Inception branches {branch_channels}; "
+                f"medium kernel=3, wide kernel={kernel}, MaxPool1D(2) after module"
+            )
+        elif residual_enabled:
             block_number = (i // residual_block_size) + 1
             block_position = (i % residual_block_size) + 1
             print(
@@ -118,6 +138,10 @@ def display_best_architecture(
     if best_genome.get("residual_enabled", False):
         print(f"{'Residual Block Size':<25} {best_genome.get('residual_block_size', 2):<30} {'Conv units per block':<25}")
         print(f"{'Residual Projection':<25} {best_genome.get('residual_projection', 'auto'):<30} {'Shortcut projection':<25}")
+    print(f"{'Inception':<25} {str(best_genome.get('inception_enabled', False)):<30} {'Inception Conv1D modules':<25}")
+    if best_genome.get("inception_enabled", False):
+        print(f"{'Inception Reduction':<25} {best_genome.get('inception_reduction_ratio', 0.5):<30} {'1x1 reduction ratio':<25}")
+        print(f"{'Inception Pool Branch':<25} {str(best_genome.get('inception_pool_branch', True)):<30} {'Pooling branch':<25}")
     print(f"{'FC Layers':<25} {best_genome['num_fc_layers']:<30} {'FC layers':<25}")
     print(f"{'Optimizer':<25} {best_genome['optimizer']:<30} {'Optimization algorithm':<25}")
     print(f"{'Learning Rate':<25} {best_genome['learning_rate']:<30.6f} {'Learning rate':<25}")
@@ -194,6 +218,10 @@ def print_checkpoint_info(neuroevolution, device: torch.device) -> None:
             if checkpoint_data['genome'].get('residual_enabled', False):
                 print(f"    Residual Block Size: {checkpoint_data['genome'].get('residual_block_size', 2)}")
                 print(f"    Residual Projection: {checkpoint_data['genome'].get('residual_projection', 'auto')}")
+            print(f"    Inception: {checkpoint_data['genome'].get('inception_enabled', False)}")
+            if checkpoint_data['genome'].get('inception_enabled', False):
+                print(f"    Inception Reduction Ratio: {checkpoint_data['genome'].get('inception_reduction_ratio', 0.5)}")
+                print(f"    Inception Pool Branch: {checkpoint_data['genome'].get('inception_pool_branch', True)}")
             print(f"    Optimizador: {checkpoint_data['genome']['optimizer']}")
             print(f"    Learning Rate: {checkpoint_data['genome']['learning_rate']}")
 

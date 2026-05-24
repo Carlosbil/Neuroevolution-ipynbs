@@ -96,6 +96,8 @@ def _mutate_residual_topology(mutated_genome: dict, config: dict) -> None:
         old_value = bool(mutated_genome.get('residual_enabled', False))
         new_value = not old_value
         mutated_genome['residual_enabled'] = new_value
+        mutated_genome['inception_enabled'] = False
+        mutated_genome['conv_topology'] = 'residual' if new_value else 'sequential'
         validate_and_fix_genome(mutated_genome, config)
         append_structural_event(
             mutated_genome,
@@ -126,6 +128,63 @@ def _mutate_residual_topology(mutated_genome: dict, config: dict) -> None:
         mutated_genome,
         'mutate_residual_projection',
         {'old': old_value, 'new': str(mutated_genome['residual_projection'])}
+    )
+
+
+def _mutate_inception_topology(mutated_genome: dict, config: dict) -> None:
+    """Mutates Inception topology fields and records the structural event."""
+    validate_and_fix_genome(mutated_genome, config)
+
+    reduction_options = list(config.get('inception_reduction_ratio_options', [0.5]))
+    pool_options = list(config.get('inception_pool_branch_options', [True]))
+    candidates = ['enabled']
+
+    if mutated_genome.get('inception_enabled', False):
+        if len(reduction_options) > 1:
+            candidates.append('reduction_ratio')
+        if len(pool_options) > 1:
+            candidates.append('pool_branch')
+
+    mutation_kind = random.choice(candidates)
+
+    if mutation_kind == 'enabled':
+        old_value = bool(mutated_genome.get('inception_enabled', False))
+        new_value = not old_value
+        mutated_genome['inception_enabled'] = new_value
+        mutated_genome['residual_enabled'] = False
+        mutated_genome['conv_topology'] = 'inception' if new_value else 'sequential'
+        validate_and_fix_genome(mutated_genome, config)
+        append_structural_event(
+            mutated_genome,
+            'mutate_inception_enabled',
+            {'old': old_value, 'new': bool(mutated_genome['inception_enabled'])}
+        )
+        return
+
+    if mutation_kind == 'reduction_ratio':
+        old_value = float(mutated_genome.get('inception_reduction_ratio', reduction_options[0]))
+        available = [float(option) for option in reduction_options if float(option) != old_value]
+        new_value = float(random.choice(available))
+        mutated_genome['inception_reduction_ratio'] = new_value
+        mutated_genome['conv_topology'] = 'inception'
+        validate_and_fix_genome(mutated_genome, config)
+        append_structural_event(
+            mutated_genome,
+            'mutate_inception_reduction_ratio',
+            {'old': old_value, 'new': float(mutated_genome['inception_reduction_ratio'])}
+        )
+        return
+
+    old_value = bool(mutated_genome.get('inception_pool_branch', pool_options[0]))
+    available = [bool(option) for option in pool_options if bool(option) != old_value]
+    new_value = bool(random.choice(available))
+    mutated_genome['inception_pool_branch'] = new_value
+    mutated_genome['conv_topology'] = 'inception'
+    validate_and_fix_genome(mutated_genome, config)
+    append_structural_event(
+        mutated_genome,
+        'mutate_inception_pool_branch',
+        {'old': old_value, 'new': bool(mutated_genome['inception_pool_branch'])}
     )
 
 
@@ -180,6 +239,9 @@ def mutate_genome(genome: dict, config: dict) -> dict:
 
         if random.random() < config.get('residual_mutation_weight', 0.15):
             _mutate_residual_topology(mutated_genome, config)
+
+        if random.random() < config.get('inception_mutation_weight', 0.15):
+            _mutate_inception_topology(mutated_genome, config)
 
         # Mutate filters
         for i in range(len(mutated_genome['filters'])):
