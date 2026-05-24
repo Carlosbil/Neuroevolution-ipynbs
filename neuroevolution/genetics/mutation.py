@@ -5,9 +5,12 @@ Mutation operators for genome evolution.
 import random
 import copy
 import uuid
-import numpy as np
 from neuroevolution.config import ACTIVATION_FUNCTIONS, OPTIMIZERS
-from neuroevolution.models.genome_validator import is_genome_valid, validate_and_fix_genome
+from neuroevolution.models.genome_validator import (
+    calculate_max_safe_conv_layers,
+    is_genome_valid,
+    validate_and_fix_genome,
+)
 from neuroevolution.genetics.innovation import build_innovation_genes, append_structural_event
 
 
@@ -74,6 +77,58 @@ def _mutate_layer_count(mutated_genome: dict, config: dict, safe_max_conv: int, 
         return
 
 
+def _mutate_residual_topology(mutated_genome: dict, config: dict) -> None:
+    """Mutates residual topology fields and records the structural event."""
+    validate_and_fix_genome(mutated_genome, config)
+
+    block_options = list(config.get('residual_block_size_options', [2]))
+    projection_options = list(config.get('residual_projection_options', ['auto']))
+    candidates = ['enabled']
+
+    if len(block_options) > 1:
+        candidates.append('block_size')
+    if len(projection_options) > 1:
+        candidates.append('projection')
+
+    mutation_kind = random.choice(candidates)
+
+    if mutation_kind == 'enabled':
+        old_value = bool(mutated_genome.get('residual_enabled', False))
+        new_value = not old_value
+        mutated_genome['residual_enabled'] = new_value
+        validate_and_fix_genome(mutated_genome, config)
+        append_structural_event(
+            mutated_genome,
+            'mutate_residual_enabled',
+            {'old': old_value, 'new': bool(mutated_genome['residual_enabled'])}
+        )
+        return
+
+    if mutation_kind == 'block_size':
+        old_value = int(mutated_genome.get('residual_block_size', block_options[0]))
+        available = [option for option in block_options if int(option) != old_value]
+        new_value = int(random.choice(available))
+        mutated_genome['residual_block_size'] = new_value
+        validate_and_fix_genome(mutated_genome, config)
+        append_structural_event(
+            mutated_genome,
+            'mutate_residual_block_size',
+            {'old': old_value, 'new': int(mutated_genome['residual_block_size'])}
+        )
+        return
+
+    old_value = str(mutated_genome.get('residual_projection', projection_options[0]))
+    available = [option for option in projection_options if str(option) != old_value]
+    new_value = str(random.choice(available))
+    mutated_genome['residual_projection'] = new_value
+    validate_and_fix_genome(mutated_genome, config)
+    append_structural_event(
+        mutated_genome,
+        'mutate_residual_projection',
+        {'old': old_value, 'new': str(mutated_genome['residual_projection'])}
+    )
+
+
 def mutate_genome(genome: dict, config: dict) -> dict:
     """
     Applies mutation to a genome using adaptive mutation rate and configurable parameters.
@@ -101,10 +156,18 @@ def mutate_genome(genome: dict, config: dict) -> dict:
         conv_cap = int(config['max_conv_layers'])
         fc_cap = int(config['max_fc_layers'])
 
-        # Also enforce architecture safety with sequence length
+        mutated_genome = validate_and_fix_genome(mutated_genome, config)
+
+        # Also enforce architecture safety with sequence length. Residual mode
+        # pools per block, so it has its own safe depth.
         sequence_length = config['sequence_length']
         min_required_length = 4
-        max_safe_conv_layers = int(np.log2(sequence_length / min_required_length))
+        max_safe_conv_layers = calculate_max_safe_conv_layers(
+            sequence_length,
+            min_required_length=min_required_length,
+            residual_enabled=mutated_genome.get('residual_enabled', False),
+            residual_block_size=mutated_genome.get('residual_block_size', 2),
+        )
         safe_max_conv = max(config['min_conv_layers'], min(conv_cap, max_safe_conv_layers))
         fc_cap = max(config['min_fc_layers'], fc_cap)
 
@@ -114,6 +177,9 @@ def mutate_genome(genome: dict, config: dict) -> dict:
 
         # Validate and fix lists to match layer counts
         mutated_genome = validate_and_fix_genome(mutated_genome, config)
+
+        if random.random() < config.get('residual_mutation_weight', 0.15):
+            _mutate_residual_topology(mutated_genome, config)
 
         # Mutate filters
         for i in range(len(mutated_genome['filters'])):
@@ -177,6 +243,15 @@ def mutate_genome(genome: dict, config: dict) -> dict:
     safe_genome = copy.deepcopy(genome)
     for cached_key in ('skip_next_evaluation', 'cached_from_generation', 'metrics', 'evaluation_status'):
         safe_genome.pop(cached_key, None)
+
+    safe_genome = validate_and_fix_genome(safe_genome, config)
+    safe_max_conv = calculate_max_safe_conv_layers(
+        config['sequence_length'],
+        min_required_length=4,
+        residual_enabled=safe_genome.get('residual_enabled', False),
+        residual_block_size=safe_genome.get('residual_block_size', 2),
+    )
+    safe_max_conv = max(config['min_conv_layers'], min(config['max_conv_layers'], safe_max_conv))
 
     safe_genome['num_conv_layers'] = max(
         config['min_conv_layers'],

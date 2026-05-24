@@ -16,6 +16,13 @@ import torch
 from ..models.evolvable_cnn import EvolvableCNN
 
 
+def _format_architecture(genome: dict) -> str:
+    base = f"{genome['num_conv_layers']}Conv1D+{genome['num_fc_layers']}FC"
+    if genome.get("residual_enabled", False):
+        return f"{base}+Residual{genome.get('residual_block_size', 2)}"
+    return base
+
+
 def display_best_architecture(
     best_genome: dict,
     config: dict,
@@ -47,15 +54,29 @@ def display_best_architecture(
     print(f"   Input: 1D Audio Signal (length={config['sequence_length']})")
     print(f"   Convolutional Layers (Conv1D): {best_genome['num_conv_layers']}")
     print(f"   Fully Connected Layers: {best_genome['num_fc_layers']}")
+    print(f"   Residual Enabled: {best_genome.get('residual_enabled', False)}")
+    if best_genome.get("residual_enabled", False):
+        print(f"   Residual Block Size: {best_genome.get('residual_block_size', 2)}")
+        print(f"   Residual Projection: {best_genome.get('residual_projection', 'auto')}")
     print(f"   Output: {config['num_classes']} classes")
 
     print("\nCONVOLUTIONAL LAYER DETAILS (1D):")
+    residual_enabled = best_genome.get("residual_enabled", False)
+    residual_block_size = best_genome.get("residual_block_size", 2)
     for i in range(best_genome["num_conv_layers"]):
         filters = best_genome["filters"][i]
         kernel = best_genome["kernel_sizes"][i]
         activation = best_genome["activations"][i % len(best_genome["activations"])]
         print(f"   Conv1D-{i+1}: {filters} filters, kernel_size={kernel}, activation={activation}")
-        print(f"             -> BatchNorm1D -> {activation.upper()} -> MaxPool1D(2)")
+        if residual_enabled:
+            block_number = (i // residual_block_size) + 1
+            block_position = (i % residual_block_size) + 1
+            print(
+                f"             -> Residual block {block_number}, unit {block_position}; "
+                "MaxPool1D(2) after block"
+            )
+        else:
+            print(f"             -> BatchNorm1D -> {activation.upper()} -> MaxPool1D(2)")
 
     print("\nFULLY CONNECTED LAYER DETAILS:")
     for i, nodes in enumerate(best_genome["fc_nodes"]):
@@ -91,8 +112,12 @@ def display_best_architecture(
     print(f"{'='*80}")
     print(f"{'ID':<25} {best_genome['id']:<30} {'Unique identifier':<25}")
     print(f"{'Fitness':<25} {best_genome['fitness']:.2f}%{'':<25} {'Accuracy achieved':<25}")
-    print(f"{'Architecture':<25} {'Conv1D + FC':<30} {'1D Convolutional':<25}")
+    print(f"{'Architecture':<25} {_format_architecture(best_genome):<30} {'1D Convolutional':<25}")
     print(f"{'Conv Layers':<25} {best_genome['num_conv_layers']:<30} {'Conv1D layers':<25}")
+    print(f"{'Residual':<25} {str(best_genome.get('residual_enabled', False)):<30} {'Residual Conv1D blocks':<25}")
+    if best_genome.get("residual_enabled", False):
+        print(f"{'Residual Block Size':<25} {best_genome.get('residual_block_size', 2):<30} {'Conv units per block':<25}")
+        print(f"{'Residual Projection':<25} {best_genome.get('residual_projection', 'auto'):<30} {'Shortcut projection':<25}")
     print(f"{'FC Layers':<25} {best_genome['num_fc_layers']:<30} {'FC layers':<25}")
     print(f"{'Optimizer':<25} {best_genome['optimizer']:<30} {'Optimization algorithm':<25}")
     print(f"{'Learning Rate':<25} {best_genome['learning_rate']:<30.6f} {'Learning rate':<25}")
@@ -163,9 +188,12 @@ def print_checkpoint_info(neuroevolution, device: torch.device) -> None:
             print(f"    Fitness: {checkpoint_data['fitness']:.2f}%")
             print(f"    ID Genoma: {checkpoint_data['genome']['id']}")
             print(
-                f"    Arquitectura: {checkpoint_data['genome']['num_conv_layers']} Conv1D + "
-                f"{checkpoint_data['genome']['num_fc_layers']} FC"
+                f"    Arquitectura: {_format_architecture(checkpoint_data['genome'])}"
             )
+            print(f"    Residual: {checkpoint_data['genome'].get('residual_enabled', False)}")
+            if checkpoint_data['genome'].get('residual_enabled', False):
+                print(f"    Residual Block Size: {checkpoint_data['genome'].get('residual_block_size', 2)}")
+                print(f"    Residual Projection: {checkpoint_data['genome'].get('residual_projection', 'auto')}")
             print(f"    Optimizador: {checkpoint_data['genome']['optimizer']}")
             print(f"    Learning Rate: {checkpoint_data['genome']['learning_rate']}")
 

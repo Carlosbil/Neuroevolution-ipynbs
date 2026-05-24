@@ -6,6 +6,20 @@ import numpy as np
 from typing import Dict, List
 
 
+def _residual_topology_distance(genome1: dict, genome2: dict, config: dict) -> float:
+    """Returns a small normalized distance for residual topology differences."""
+    enabled_distance = 0.0 if bool(genome1.get('residual_enabled', False)) == bool(genome2.get('residual_enabled', False)) else 1.0
+
+    block_options = config.get('residual_block_size_options', [2, 3])
+    block_span = max(1, max(block_options) - min(block_options)) if block_options else 1
+    block_distance = abs(
+        int(genome1.get('residual_block_size', 2)) - int(genome2.get('residual_block_size', 2))
+    ) / block_span
+
+    projection_distance = 0.0 if str(genome1.get('residual_projection', 'auto')) == str(genome2.get('residual_projection', 'auto')) else 1.0
+    return (enabled_distance + min(1.0, block_distance) + projection_distance) / 3.0
+
+
 def calculate_compatibility_distance(genome1: dict, genome2: dict, config: dict) -> float:
     """
     Calculates compatibility distance between two genomes.
@@ -37,7 +51,9 @@ def calculate_compatibility_distance(genome1: dict, genome2: dict, config: dict)
         abs(np.log10(genome1.get('learning_rate', 1e-4)) - np.log10(genome2.get('learning_rate', 1e-4))) / 4.0
     ) / 2.0
 
-    return 0.45 * topo + 0.45 * innovation_mismatch + 0.10 * numeric
+    residual = _residual_topology_distance(genome1, genome2, config)
+
+    return 0.40 * topo + 0.40 * innovation_mismatch + 0.10 * residual + 0.10 * numeric
 
 
 def assign_species(population: List[dict], species_dict: Dict, config: dict) -> Dict:

@@ -4,9 +4,12 @@ Genome creation functions for neuroevolution.
 
 import random
 import uuid
-import numpy as np
 from neuroevolution.config import ACTIVATION_FUNCTIONS, OPTIMIZERS
-from neuroevolution.models.genome_validator import is_genome_valid, validate_and_fix_genome
+from neuroevolution.models.genome_validator import (
+    calculate_max_safe_conv_layers,
+    is_genome_valid,
+    validate_and_fix_genome,
+)
 from neuroevolution.genetics.innovation import build_innovation_genes
 
 
@@ -29,13 +32,33 @@ def create_random_genome(config: dict) -> dict:
     fc_cap = config.get('current_max_fc_layers', config['max_fc_layers'])
 
     while attempt < max_attempts:
-        # Calculate maximum safe conv layers based on sequence length
+        residual_block_options = config.get('residual_block_size_options', [2])
+        residual_projection_options = config.get('residual_projection_options', ['auto'])
+        residual_enabled = random.choices(
+            [True, False],
+            weights=[
+                config.get('residual_enabled_weight', 0.35),
+                config.get('residual_disabled_weight', 0.65),
+            ],
+        )[0]
+        residual_block_size = random.choice(residual_block_options)
+        residual_projection = random.choice(residual_projection_options)
+
+        # Calculate maximum safe conv layers based on sequence length and
+        # selected topology. Residual mode pools per block, so deeper stacks can
+        # still be safe.
         sequence_length = config['sequence_length']
         min_required_length = 4
-        max_safe_conv_layers = int(np.log2(sequence_length / min_required_length))
+        max_safe_conv_layers = calculate_max_safe_conv_layers(
+            sequence_length,
+            min_required_length=min_required_length,
+            residual_enabled=residual_enabled,
+            residual_block_size=residual_block_size,
+        )
 
         # Limit conv layers to safe maximum
         safe_max_conv = min(conv_cap, max_safe_conv_layers)
+        safe_max_conv = max(config['min_conv_layers'], safe_max_conv)
 
         # Number of layers
         num_conv_layers = random.randint(config['min_conv_layers'], safe_max_conv)
@@ -78,11 +101,15 @@ def create_random_genome(config: dict) -> dict:
             'learning_rate': learning_rate,
             'optimizer': optimizer,
             'normalization_type': normalization_type,
+            'residual_enabled': residual_enabled,
+            'residual_block_size': residual_block_size,
+            'residual_projection': residual_projection,
             'fitness': 0.0,
             'id': str(uuid.uuid4())[:8],
             'structural_history': []
         }
 
+        genome = validate_and_fix_genome(genome, config)
         if is_genome_valid(genome, config):
             genome['innovation_genes'] = build_innovation_genes(genome)
             return genome
@@ -101,9 +128,13 @@ def create_random_genome(config: dict) -> dict:
         'learning_rate': 0.001,
         'optimizer': 'adam',
         'normalization_type': 'batch',
+        'residual_enabled': False,
+        'residual_block_size': 2,
+        'residual_projection': 'auto',
         'fitness': 0.0,
         'id': str(uuid.uuid4())[:8],
         'structural_history': []
     }
+    genome = validate_and_fix_genome(genome, config)
     genome['innovation_genes'] = build_innovation_genes(genome)
     return genome

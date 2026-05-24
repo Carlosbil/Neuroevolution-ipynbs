@@ -25,7 +25,10 @@ from .data.loader import load_dataset
 # Model components
 from .models.evolvable_cnn import EvolvableCNN
 from .models.genome_validator import (
+    calculate_pooling_operation_count,
+    estimate_genome_parameter_count,
     is_genome_valid,
+    normalize_residual_fields,
     validate_and_fix_genome,
     calculate_max_safe_conv_layers,
 )
@@ -91,8 +94,11 @@ __all__ = [
     # Models
     "EvolvableCNN",
     "is_genome_valid",
+    "normalize_residual_fields",
     "validate_and_fix_genome",
     "calculate_max_safe_conv_layers",
+    "calculate_pooling_operation_count",
+    "estimate_genome_parameter_count",
     # Genetics
     "create_random_genome",
     "mutate_genome",

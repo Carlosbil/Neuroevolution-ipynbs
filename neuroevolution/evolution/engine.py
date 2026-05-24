@@ -24,7 +24,7 @@ from ..genetics.genome import create_random_genome
 from ..genetics.mutation import mutate_genome
 from ..genetics.crossover import crossover_genomes
 from ..genetics.innovation import build_innovation_genes, append_structural_event
-from ..models.genome_validator import validate_and_fix_genome
+from ..models.genome_validator import calculate_max_safe_conv_layers, validate_and_fix_genome
 from ..models.evolvable_cnn import EvolvableCNN
 from .fitness import evaluate_fitness
 
@@ -149,6 +149,16 @@ class HybridNeuroevolution:
         genome['innovation_genes'] = build_innovation_genes(genome)
         return genome
 
+    def _max_safe_conv_layers_for_genome(self, genome: dict) -> int:
+        """Returns safe conv depth for a genome's current topology."""
+        fixed = validate_and_fix_genome(copy.deepcopy(genome), self.config)
+        return calculate_max_safe_conv_layers(
+            self.config['sequence_length'],
+            min_required_length=4,
+            residual_enabled=fixed.get('residual_enabled', False),
+            residual_block_size=fixed.get('residual_block_size', 2),
+        )
+
     def _create_double_cap_individual(self) -> dict:
         """Creates one individual using doubled layer caps for the current generation."""
         base_conv_cap = max(
@@ -163,11 +173,6 @@ class HybridNeuroevolution:
         target_conv_layers = min(self.config['max_conv_layers'], base_conv_cap * 2)
         target_fc_layers = min(self.config['max_fc_layers'], base_fc_cap * 2)
 
-        max_safe_conv_layers = int(np.log2(self.config['sequence_length'] / 4))
-        target_conv_layers = max(
-            self.config['min_conv_layers'],
-            min(target_conv_layers, max_safe_conv_layers)
-        )
         target_fc_layers = max(self.config['min_fc_layers'], target_fc_layers)
 
         boosted_config = copy.deepcopy(self.config)
@@ -175,6 +180,11 @@ class HybridNeuroevolution:
         boosted_config['current_max_fc_layers'] = target_fc_layers
 
         genome = create_random_genome(boosted_config)
+        max_safe_conv_layers = self._max_safe_conv_layers_for_genome(genome)
+        target_conv_layers = max(
+            self.config['min_conv_layers'],
+            min(target_conv_layers, max_safe_conv_layers)
+        )
         genome['num_conv_layers'] = target_conv_layers
         genome['num_fc_layers'] = target_fc_layers
         genome = validate_and_fix_genome(genome, boosted_config)
@@ -194,6 +204,24 @@ class HybridNeuroevolution:
         )
         return genome
 
+    def _residual_topology_distance(self, g1: dict, g2: dict) -> float:
+        """Returns a normalized distance for residual topology differences."""
+        enabled_distance = 0.0 if bool(g1.get('residual_enabled', False)) == bool(g2.get('residual_enabled', False)) else 1.0
+        block_options = self.config.get('residual_block_size_options', [2, 3])
+        block_span = max(1, max(block_options) - min(block_options)) if block_options else 1
+        block_distance = abs(
+            int(g1.get('residual_block_size', 2)) - int(g2.get('residual_block_size', 2))
+        ) / block_span
+        projection_distance = 0.0 if str(g1.get('residual_projection', 'auto')) == str(g2.get('residual_projection', 'auto')) else 1.0
+        return (enabled_distance + min(1.0, block_distance) + projection_distance) / 3.0
+
+    def _format_architecture(self, genome: dict) -> str:
+        """Formats architecture topology for logs and cached generation summaries."""
+        base = f"{genome['num_conv_layers']}conv+{genome['num_fc_layers']}fc"
+        if genome.get('residual_enabled', False):
+            return f"{base}+res{genome.get('residual_block_size', 2)}"
+        return base
+
     def compatibility_distance(self, g1: dict, g2: dict) -> float:
         """Combines topology differences and innovation mismatch for speciation."""
         topo = (
@@ -211,7 +239,9 @@ class HybridNeuroevolution:
             abs(np.log10(g1.get('learning_rate', 1e-4)) - np.log10(g2.get('learning_rate', 1e-4))) / 4.0
         ) / 2.0
 
-        return 0.45 * topo + 0.45 * innovation_mismatch + 0.10 * numeric
+        residual = self._residual_topology_distance(g1, g2)
+
+        return 0.40 * topo + 0.40 * innovation_mismatch + 0.10 * residual + 0.10 * numeric
 
     def _speciate_population(self):
         """Assigns genomes to species based on compatibility distance."""
@@ -264,7 +294,6 @@ class HybridNeuroevolution:
         )
 
         self.population = []
-        max_safe_conv_layers = int(np.log2(self.config['sequence_length'] / 4))
         min_conv_layers = int(self.config['min_conv_layers'])
         min_fc_layers = int(self.config['min_fc_layers'])
 
@@ -276,7 +305,7 @@ class HybridNeuroevolution:
             conv_quartile_cap = int(np.ceil((quartile_number / 4.0) * self.config['max_conv_layers']))
             fc_quartile_cap = int(np.ceil((quartile_number / 4.0) * self.config['max_fc_layers']))
 
-            conv_quartile_cap = max(min_conv_layers, min(conv_quartile_cap, max_safe_conv_layers))
+            conv_quartile_cap = max(min_conv_layers, conv_quartile_cap)
             fc_quartile_cap = max(min_fc_layers, fc_quartile_cap)
 
             quartile_config = copy.deepcopy(self.config)
@@ -284,9 +313,11 @@ class HybridNeuroevolution:
             quartile_config['current_max_fc_layers'] = fc_quartile_cap
 
             genome = create_random_genome(quartile_config)
+            genome_safe_max_conv_layers = self._max_safe_conv_layers_for_genome(genome)
+            genome_quartile_cap = max(min_conv_layers, min(conv_quartile_cap, genome_safe_max_conv_layers))
 
             # Force layer counts to remain inside the quartile range requested by the user.
-            genome['num_conv_layers'] = random.randint(min_conv_layers, conv_quartile_cap)
+            genome['num_conv_layers'] = random.randint(min_conv_layers, genome_quartile_cap)
             genome['num_fc_layers'] = random.randint(min_fc_layers, fc_quartile_cap)
             genome = validate_and_fix_genome(genome, quartile_config)
             genome['innovation_genes'] = build_innovation_genes(genome)
@@ -297,7 +328,7 @@ class HybridNeuroevolution:
                 {
                     'index_in_population': i,
                     'quartile': quartile_number,
-                    'conv_cap': conv_quartile_cap,
+                    'conv_cap': genome_quartile_cap,
                     'fc_cap': fc_quartile_cap,
                     'num_conv_layers': int(genome['num_conv_layers']),
                     'num_fc_layers': int(genome['num_fc_layers'])
@@ -371,6 +402,7 @@ class HybridNeuroevolution:
 
             print(f"Checkpoint cargado exitosamente: {self.best_checkpoint_path}")
             print(f"  Fitness: {checkpoint_data['fitness']:.2f}%, Gen: {checkpoint_data['generation']}, ID: {genome['id']}")
+            print(f"  Architecture: {self._format_architecture(genome)}")
 
             return genome, model
         except Exception as e:
@@ -393,7 +425,7 @@ class HybridNeuroevolution:
                 f"   Evaluating individual {i+1}/{len(self.population)} (ID: {genome['id']})"
             )
             print(
-                f"      Architecture: {genome['num_conv_layers']} conv layers, {genome['num_fc_layers']} FC layers, "
+                f"      Architecture: {self._format_architecture(genome)}, "
                 f"optimizer={genome['optimizer']}, learning_rate={genome['learning_rate']}"
             )
 
@@ -421,7 +453,7 @@ class HybridNeuroevolution:
             individual_summary = {
                 'id': genome['id'],
                 'fitness': fitness,
-                'architecture': f"{genome['num_conv_layers']}conv+{genome['num_fc_layers']}fc",
+                'architecture': self._format_architecture(genome),
                 'optimizer': genome['optimizer'],
                 'lr': genome['learning_rate'],
                 'metrics': metrics,
@@ -474,13 +506,13 @@ class HybridNeuroevolution:
         generation_log_lines.append("=" * 100)
         generation_log_lines.append(f"GENERATION {self.generation} - DETAILED METRICS SUMMARY")
         generation_log_lines.append("=" * 100)
-        generation_log_lines.append(f"{'ID':<15} {'Arch':<15} {'Acc':<10} {'Sen':<10} {'Spe':<10} {'Pre':<10} {'F1':<10} {'AUC':<10}")
+        generation_log_lines.append(f"{'ID':<15} {'Arch':<24} {'Acc':<10} {'Sen':<10} {'Spe':<10} {'Pre':<10} {'F1':<10} {'AUC':<10}")
         generation_log_lines.append("-" * 100)
 
         for ind in sorted_individuals:
             m = ind['metrics']
             generation_log_lines.append(
-                f"{ind['id'][:13]:<15} {ind['architecture']:<15} "
+                f"{ind['id'][:13]:<15} {ind['architecture']:<24} "
                 f"{m['accuracy']:>6.2f}%   {m['sensitivity']:>6.2f}%   "
                 f"{m['specificity']:>6.2f}%   {m['precision']:>6.2f}%   "
                 f"{m['f1_score']:>6.2f}%   {m['auc']:>6.2f}%"
@@ -663,7 +695,11 @@ class HybridNeuroevolution:
         best = self.best_individual
         print(f"\n🏆 BEST INDIVIDUAL DETAILS:")
         print(f"   ID: {best['id']}")
-        print(f"   Architecture: {best['num_conv_layers']} Conv1D layers + {best['num_fc_layers']} FC layers")
+        print(f"   Architecture: {self._format_architecture(best)}")
+        print(f"   Residual Enabled: {best.get('residual_enabled', False)}")
+        if best.get('residual_enabled', False):
+            print(f"   Residual Block Size: {best.get('residual_block_size', 2)}")
+            print(f"   Residual Projection: {best.get('residual_projection', 'auto')}")
         print(f"   Optimizer: {best['optimizer']}")
         print(f"   Learning Rate: {best['learning_rate']}")
         print(f"   Fitness: {best['fitness']:.2f}%")
@@ -696,7 +732,7 @@ class HybridNeuroevolution:
             print(f"   └─────────────┴────────────────────────┘")
             
             # Formato LaTeX
-            arch = f"{best['num_conv_layers']}Conv1D+{best['num_fc_layers']}FC"
+            arch = self._format_architecture(best)
             print(f"\n📄 LaTeX FORMAT:")
             latex = f"   Neuroevolution-{arch} & {m['accuracy']/100:.2f} (±{m['accuracy_std']/100:.2f}) & {m['sensitivity']/100:.2f} (±{m['sensitivity_std']/100:.2f}) & {m['specificity']/100:.2f} (±{m['specificity_std']/100:.2f}) & {m['f1_score']/100:.2f} (±{m['f1_score_std']/100:.2f}) & {m['auc']/100:.2f} (±{m['auc_std']/100:.2f}) \\\\\\\\"
             print(latex)
@@ -732,6 +768,12 @@ class HybridNeuroevolution:
         print(f"   Target fitness: {self.config['fitness_threshold']}%")
         print(f"   Early stopping (generations): {self.config['early_stopping_generations']} without improvement")
         print(f"   Min improvement threshold: {self.config['min_improvement_threshold']}%")
+        print(
+            "   Residual search: "
+            f"enabled_weight={self.config.get('residual_enabled_weight', 0.35)}, "
+            f"disabled_weight={self.config.get('residual_disabled_weight', 0.65)}, "
+            f"block_sizes={self.config.get('residual_block_size_options', [2, 3])}"
+        )
         print(f"   Device: {self.device}")
         print("="*80)
         

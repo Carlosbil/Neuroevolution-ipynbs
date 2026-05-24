@@ -24,6 +24,8 @@ def _innovation_aligned_child(dominant_parent: dict, other_parent: dict, config:
     """
     dominant = copy.deepcopy(dominant_parent)
     other = copy.deepcopy(other_parent)
+    dominant = validate_and_fix_genome(dominant, config)
+    other = validate_and_fix_genome(other, config)
 
     if 'innovation_genes' not in dominant:
         dominant['innovation_genes'] = build_innovation_genes(dominant)
@@ -57,7 +59,10 @@ def _innovation_aligned_child(dominant_parent: dict, other_parent: dict, config:
         parts = gene['gene_key'].split('_')
         if len(parts) < 3:
             continue
-        idx = int(parts[-1])
+        try:
+            idx = int(parts[-1])
+        except ValueError:
+            continue
         key_prefix = '_'.join(parts[:2])
 
         if key_prefix == 'conv_filter':
@@ -77,6 +82,11 @@ def _innovation_aligned_child(dominant_parent: dict, other_parent: dict, config:
         child['kernel_sizes'] = conv_kernels
     if fc_nodes:
         child['fc_nodes'] = fc_nodes
+
+    residual_source = dominant if random.random() < 0.5 else other
+    child['residual_enabled'] = residual_source.get('residual_enabled', False)
+    child['residual_block_size'] = residual_source.get('residual_block_size', 2)
+    child['residual_projection'] = residual_source.get('residual_projection', 'auto')
 
     child['num_conv_layers'] = min(len(child.get('filters', [])), len(child.get('kernel_sizes', [])))
     child['num_fc_layers'] = len(child.get('fc_nodes', []))
@@ -102,7 +112,8 @@ def _innovation_aligned_child(dominant_parent: dict, other_parent: dict, config:
         {
             'dominant_parent': dominant_parent.get('id', 'unknown'),
             'other_parent': other_parent.get('id', 'unknown'),
-            'num_merged_genes': len(merged_genes)
+            'num_merged_genes': len(merged_genes),
+            'residual_source_parent': residual_source.get('id', 'unknown')
         }
     )
     return child
@@ -128,6 +139,8 @@ def crossover_genomes(parent1: dict, parent2: dict, config: dict) -> Tuple[dict,
         child2['id'] = str(uuid.uuid4())[:8]
         child1['fitness'] = 0.0
         child2['fitness'] = 0.0
+        child1 = validate_and_fix_genome(child1, config)
+        child2 = validate_and_fix_genome(child2, config)
         child1['innovation_genes'] = build_innovation_genes(child1)
         child2['innovation_genes'] = build_innovation_genes(child2)
         return child1, child2

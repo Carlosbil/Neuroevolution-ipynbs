@@ -116,6 +116,15 @@ def get_default_config(info_path: str = None) -> dict:
         # Mutation parameters - Normalization type weights
         'normalization_batch_weight': 0.8,
         'normalization_layer_weight': 0.2,
+
+        # Residual Conv1D search parameters. Residual mode is optional and
+        # sampled as part of the architecture search space.
+        'residual_enabled_weight': 0.35,
+        'residual_disabled_weight': 0.65,
+        'residual_block_size_options': [2, 3],
+        'residual_projection_options': ['auto'],
+        'residual_mutation_weight': 0.15,
+        'max_model_parameters': None,
         
         'artifact_dir': info_path,
         'artifacts_dir': info_path,
@@ -190,6 +199,30 @@ def validate_config(config: dict) -> None:
 
     if int(config.get('dataloader_prefetch_factor', 1)) < 1:
         raise ValueError("dataloader_prefetch_factor must be at least 1")
+
+    # Residual search parameters
+    residual_enabled_weight = float(config.get('residual_enabled_weight', 0.0))
+    residual_disabled_weight = float(config.get('residual_disabled_weight', 1.0))
+    if residual_enabled_weight < 0 or residual_disabled_weight < 0:
+        raise ValueError("Residual topology weights must be non-negative")
+    if residual_enabled_weight + residual_disabled_weight <= 0:
+        raise ValueError("At least one residual topology weight must be positive")
+
+    residual_block_sizes = config.get('residual_block_size_options', [])
+    if not residual_block_sizes or any(int(size) < 1 for size in residual_block_sizes):
+        raise ValueError("residual_block_size_options must contain positive integers")
+
+    residual_projection_options = config.get('residual_projection_options', [])
+    if not residual_projection_options or 'auto' not in residual_projection_options:
+        raise ValueError("residual_projection_options must include 'auto'")
+
+    residual_mutation_weight = float(config.get('residual_mutation_weight', 0.0))
+    if not (0 <= residual_mutation_weight <= 1):
+        raise ValueError("residual_mutation_weight must be between 0 and 1")
+
+    max_model_parameters = config.get('max_model_parameters')
+    if max_model_parameters is not None and int(max_model_parameters) < 1:
+        raise ValueError("max_model_parameters must be a positive integer or None")
 
 
 # Global constants - exported for convenience
