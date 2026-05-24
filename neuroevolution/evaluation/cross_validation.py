@@ -20,16 +20,12 @@ from sklearn.metrics import accuracy_score, confusion_matrix, f1_score, recall_s
 
 from ..config import OPTIMIZERS
 from ..evolution.fitness import load_fold_data as load_fold_data_from_evolution
+from ..models.architecture_formatting import format_genome_architecture
 from ..models.evolvable_cnn import EvolvableCNN
 
 
 def _format_architecture(genome: dict) -> str:
-    base = f"{genome['num_conv_layers']}Conv1D+{genome['num_fc_layers']}FC"
-    if genome.get("inception_enabled", False):
-        return f"{base}+Inception"
-    if genome.get("residual_enabled", False):
-        return f"{base}+Residual{genome.get('residual_block_size', 2)}"
-    return base
+    return format_genome_architecture(genome)
 
 
 def load_fold_data(

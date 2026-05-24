@@ -238,4 +238,7 @@ def test_signatures_speciation_and_summaries_distinguish_inception():
     assert "Topology: inception" in summary
     assert "Inception Reduction Ratio: 0.25" in summary
     assert "Inception Pool Branch: False" in summary
-    assert format_cv_architecture(inception).endswith("+Inception")
+    assert format_cv_architecture(inception) == (
+        "inception Conv1D modules, 2 conv units, "
+        "reduction_ratio=0.25, pool_branch=False, 1 fc"
+    )

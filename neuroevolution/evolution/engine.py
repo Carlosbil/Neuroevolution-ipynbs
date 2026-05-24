@@ -24,6 +24,7 @@ from ..genetics.genome import create_random_genome
 from ..genetics.mutation import mutate_genome
 from ..genetics.crossover import crossover_genomes
 from ..genetics.innovation import build_innovation_genes, append_structural_event
+from ..models.architecture_formatting import format_genome_architecture
 from ..models.genome_validator import calculate_max_safe_conv_layers, validate_and_fix_genome
 from ..models.evolvable_cnn import EvolvableCNN
 from .fitness import evaluate_fitness
@@ -238,12 +239,7 @@ class HybridNeuroevolution:
 
     def _format_architecture(self, genome: dict) -> str:
         """Formats architecture topology for logs and cached generation summaries."""
-        base = f"{genome['num_conv_layers']}conv+{genome['num_fc_layers']}fc"
-        if genome.get('inception_enabled', False):
-            return f"{base}+inc"
-        if genome.get('residual_enabled', False):
-            return f"{base}+res{genome.get('residual_block_size', 2)}"
-        return base
+        return format_genome_architecture(genome)
 
     def compatibility_distance(self, g1: dict, g2: dict) -> float:
         """Combines topology differences and innovation mismatch for speciation."""

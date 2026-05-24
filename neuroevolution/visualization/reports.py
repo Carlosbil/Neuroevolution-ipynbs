@@ -13,17 +13,13 @@ from typing import Optional
 
 import torch
 
+from ..models.architecture_formatting import format_genome_architecture
 from ..models.evolvable_cnn import EvolvableCNN
 from ..models.genome_validator import calculate_inception_branch_channels
 
 
 def _format_architecture(genome: dict) -> str:
-    base = f"{genome['num_conv_layers']}Conv1D+{genome['num_fc_layers']}FC"
-    if genome.get("inception_enabled", False):
-        return f"{base}+Inception"
-    if genome.get("residual_enabled", False):
-        return f"{base}+Residual{genome.get('residual_block_size', 2)}"
-    return base
+    return format_genome_architecture(genome)
 
 
 def display_best_architecture(
