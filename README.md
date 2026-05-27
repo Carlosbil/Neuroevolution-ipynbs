@@ -9,10 +9,10 @@ Proyecto de investigación para clasificación de voz en detección de Parkinson
 Este repositorio implementa un pipeline híbrido que combina:
 
 1. **Algoritmo genético** para evolucionar arquitecturas de redes Conv1D
-2. **Evaluación de fitness** con 5-fold cross-validation en paralelo (ThreadPoolExecutor)
+2. **Evaluación de fitness** con 5-fold cross-validation en paralelo (ThreadPoolExecutor), usando solo validación durante la evolución
 3. **Entrenamiento supervisado** con técnicas adaptativas de mutación y cruce
 4. **Checkpointing dinámico** del mejor modelo global durante evolución
-5. **Evaluación final** con métricas completas (Accuracy, Precision, Recall, F1, AUC, matriz de confusión)
+5. **Evaluación final** con selección por validación y métricas test-only (Accuracy, Precision, Recall, F1, AUC, matriz de confusión)
 
 El objetivo es encontrar arquitecturas robustas para separar clases **Control vs Pathological** en señales de voz.
 
@@ -56,11 +56,11 @@ Organizado en **7 submódulos** (26 archivos .py, ~78 KB):
 
 #### 5. **evolution/**
 - `engine.py` — Orquestador HybridNeuroevolution (generaciones, evolución, estadísticas)
-- `fitness.py` — Evaluación paralela de fitness con 5-fold CV (ThreadPoolExecutor max_workers=5)
+- `fitness.py` — Evaluación paralela de fitness con 5-fold CV; el fitness usa validación, no test
 
 #### 6. **evaluation/**
 - `metrics.py` — Cálculo de métricas (accuracy, precision, recall, F1, AUC, sensibilidad, especificidad)
-- `cross_validation.py` — Pipeline 5-fold con gestión de folds individuales
+- `cross_validation.py` — Pipeline 5-fold final: validación selecciona epoch, test reporta métricas
 - `artifacts.py` — Gestor de artefactos (generación de checkpoints, progreso JSON, logs)
 
 #### 7. **visualization/**
@@ -85,7 +85,7 @@ Ambos notebooks operan sobre el mismo paquete `neuroevolution/`, pero usan confi
 - Especiación genética (agrupación por distancia de compatibilidad)
 - **Sofisticado: menor riesgo de convergencia prematura, mayor diversidad**
 
-Ambos preservan la evaluación paralela de fitness con 5-fold CV y metrics agregadas.
+Ambos preservan la evaluación paralela de fitness con 5-fold CV y métricas agregadas. Durante la evolución, el fitness se calcula con el split de validación; el split de test se reserva para la evaluación final del mejor genoma.
 
 ## Datos y estructura
 
@@ -105,6 +105,13 @@ data/
 ```
 
 **Principal**: Los archivos en `data/sets/folds_5/` contienen los splits 5-fold CV (.npy) para entrenamiento/validación/test.
+
+### Protocolo validación/test
+
+- **Evolución**: train entrena cada fold y validation calcula early stopping, selección del mejor estado y fitness agregado.
+- **Test**: no participa en la presión evolutiva ni en la selección de epoch.
+- **Evaluación final**: validation selecciona/restaura el mejor epoch de cada fold y test produce las métricas finales reportadas.
+- **Migración**: runs antiguos que usaban `val + test` como fitness no son directamente comparables con este protocolo limpio.
 
 ### Estructura global (post-refactorización)
 
@@ -145,7 +152,7 @@ Notebook (7 celdas):
 │
 ├── Celdas 4-5: Evolución
 │   └─> neuroevolution.HybridNeuroevolution(...).evolve()
-│       ├─> Parallel fitness eval (5 fold threads)
+│       ├─> Parallel fitness eval (5 fold threads, validation-only)
 │       ├─> Mutation/crossover/selection from genetics/
 │       ├─> Checkpoint save (artifacts/*)
 │       └─> Progress logging
@@ -307,6 +314,7 @@ Tests validan:
 - ✅ Operadores genéticos (mutation, crossover, selection)
 - ✅ Entrenamiento del modelo (forward pass, backward, update)
 - ✅ Evaluación paralela (5-fold ThreadPoolExecutor)
+- ✅ Separación validation/test: fitness solo con validación y test solo en evaluación final
 - ✅ Checkpointing (save/load state_dict, genome, config)
 - ✅ Equivalencia numérica (tolerancias: ±1e-7 float32, ±1e-5 CUDA)
 
@@ -382,7 +390,7 @@ Configurable vía `dataset_id` y `fold_id` en CONFIG.
 
 - ✅ Refactorización completada (19+ módulos, 7 paquetes)
 - ✅ Notebooks actualizados a orquestadores ligeros
-- ✅ Tests operacionales (32 suites, 4 niveles de validación)
+- ✅ Tests operacionales y regresiones de protocolo validation/test
 - ✅ Documentación refrescada
 - 🔲 Validación en CI/CD (próximo fase)
 

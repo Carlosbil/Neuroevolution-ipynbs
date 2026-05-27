@@ -13,13 +13,23 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Tuple, Dict
+from typing import Tuple
 
 from ..models.evolvable_cnn import EvolvableCNN
 from ..config import OPTIMIZERS
 
 _FOLD_DATALOADER_CACHE = {}
 _FOLD_DATALOADER_CACHE_LOCK = threading.Lock()
+_VALID_EVAL_SPLITS = {'validation', 'test', 'validation_and_test', 'all'}
+
+
+def _normalize_eval_split(eval_split: str) -> str:
+    """Returns a validated fold evaluation split mode."""
+    normalized = str(eval_split).lower()
+    if normalized not in _VALID_EVAL_SPLITS:
+        valid_options = ', '.join(sorted(_VALID_EVAL_SPLITS))
+        raise ValueError(f"Invalid eval_split '{eval_split}'. Expected one of: {valid_options}")
+    return normalized
 
 
 def _resolve_fold_files_directory(config: dict) -> str:
@@ -62,7 +72,8 @@ def _build_fold_cache_key(
     config: dict,
     device: torch.device,
     cache_mode: str,
-) -> Tuple[str, str, int, int, int, bool, int, bool, str]:
+    eval_split: str,
+) -> Tuple[str, str, int, int, int, bool, int, bool, str, str]:
     """Builds a deterministic cache key for a fold DataLoader pair."""
     num_workers, persistent_workers, prefetch_factor, pin_memory = _resolve_dataloader_settings(config, device)
     return (
@@ -75,6 +86,7 @@ def _build_fold_cache_key(
         prefetch_factor,
         pin_memory and cache_mode != 'none',
         cache_mode,
+        _normalize_eval_split(eval_split),
     )
 
 
@@ -160,7 +172,8 @@ def evaluate_fitness(genome: dict, config: dict, device: torch.device) -> Tuple[
                 'auc': np.mean([m['auc'] for m in valid_metrics]),
                 'auc_std': np.std([m['auc'] for m in valid_metrics]),
                 'fold_metrics': fold_metrics,
-                'n_valid_folds': len(valid_metrics)
+                'n_valid_folds': len(valid_metrics),
+                'fitness_split': 'validation'
             }
         else:
             aggregated_metrics = {
@@ -171,13 +184,14 @@ def evaluate_fitness(genome: dict, config: dict, device: torch.device) -> Tuple[
                 'f1_score': 0.0, 'f1_score_std': 0.0,
                 'auc': 0.0, 'auc_std': 0.0,
                 'fold_metrics': {},
-                'n_valid_folds': 0
+                'n_valid_folds': 0,
+                'fitness_split': 'validation'
             }
 
         print(f"      + PARALLEL 5-Fold CV Results for {genome['id']}:")
-        print(f"        Fold F1-scores: {[f'{score:.2f}%' for score in f1_scores_list]}")
-        print(f"        Average fitness: {avg_fitness:.2f}% +/- {std_fitness:.2f}%")
-        print(f"        Best fold: Fold {best_fold_num} with {best_fold_f1:.2f}% F1")
+        print(f"        Fold validation F1-scores: {[f'{score:.2f}%' for score in f1_scores_list]}")
+        print(f"        Average validation fitness: {avg_fitness:.2f}% +/- {std_fitness:.2f}%")
+        print(f"        Best fold: Fold {best_fold_num} with {best_fold_f1:.2f}% validation F1")
         print("        --- AGGREGATED METRICS ---")
         print(f"        Accuracy:     {aggregated_metrics['accuracy']:.2f}% +/- {aggregated_metrics['accuracy_std']:.2f}%")
         print(f"        Sensitivity:  {aggregated_metrics['sensitivity']:.2f}% +/- {aggregated_metrics['sensitivity_std']:.2f}%")
@@ -200,7 +214,8 @@ def evaluate_fitness(genome: dict, config: dict, device: torch.device) -> Tuple[
             'f1_score': 0.0, 'f1_score_std': 0.0,
             'auc': 0.0, 'auc_std': 0.0,
             'fold_metrics': {},
-            'n_valid_folds': 0
+            'n_valid_folds': 0,
+            'fitness_split': 'validation'
         }
         return 0.0, None, empty_metrics
 
@@ -219,7 +234,12 @@ def train_fold_in_thread(genome: dict, fold_num: int, config: dict, device: torc
         Tuple of (fold_num, score, model, metrics)
     """
     try:
-        fold_train_loader, fold_test_loader = load_fold_data(fold_num, config, device)
+        fold_train_loader, fold_validation_loader = load_fold_data(
+            fold_num,
+            config,
+            device,
+            eval_split='validation',
+        )
 
         try:
             model = EvolvableCNN(genome, config).to(device)
@@ -233,7 +253,7 @@ def train_fold_in_thread(genome: dict, fold_num: int, config: dict, device: torc
         optimizer = optimizer_class(model.parameters(), lr=genome['learning_rate'])
         criterion = nn.CrossEntropyLoss()
 
-        best_acc = 0.0
+        best_validation_acc = 0.0
         best_state = None
         patience_left = int(config.get('epoch_patience', 10))
         max_epochs = int(config.get('num_epochs', 30))
@@ -280,7 +300,7 @@ def train_fold_in_thread(genome: dict, fold_num: int, config: dict, device: torc
             correct = 0
             total = 0
             with torch.no_grad():
-                for data, target in fold_test_loader:
+                for data, target in fold_validation_loader:
                     data = data.to(device, non_blocking=True)
                     target = target.to(device, non_blocking=True)
                     with torch.autocast(device_type=autocast_device_type, dtype=amp_dtype, enabled=amp_enabled):
@@ -289,10 +309,10 @@ def train_fold_in_thread(genome: dict, fold_num: int, config: dict, device: torc
                     total += target.size(0)
                     correct += (predicted == target).sum().item()
 
-            acc = 100.0 * correct / max(1, total)
+            validation_acc = 100.0 * correct / max(1, total)
 
-            if acc > (best_acc + improvement_threshold):
-                best_acc = acc
+            if validation_acc > (best_validation_acc + improvement_threshold):
+                best_validation_acc = validation_acc
                 best_state = {k: v.detach().clone() for k, v in model.state_dict().items()}
                 patience_left = int(config.get('epoch_patience', 10))
             else:
@@ -309,7 +329,7 @@ def train_fold_in_thread(genome: dict, fold_num: int, config: dict, device: torc
         all_probs = []
 
         with torch.no_grad():
-            for data, target in fold_test_loader:
+            for data, target in fold_validation_loader:
                 data = data.to(device, non_blocking=True)
                 target = target.to(device, non_blocking=True)
                 with torch.autocast(device_type=autocast_device_type, dtype=amp_dtype, enabled=amp_enabled):
@@ -349,11 +369,12 @@ def train_fold_in_thread(genome: dict, fold_num: int, config: dict, device: torc
             'specificity': float(specificity),
             'precision': float(precision),
             'f1_score': float(f1_score),
-            'auc': float(auc)
+            'auc': float(auc),
+            'evaluation_split': 'validation',
         }
 
         print(
-            f"      -> Fold {fold_num} completed: "
+            f"      -> Fold {fold_num} validation completed: "
             f"Acc={metrics['accuracy']:.2f}%, Sen={metrics['sensitivity']:.2f}%, "
             f"Spe={metrics['specificity']:.2f}%, F1={metrics['f1_score']:.2f}%, "
             f"AUC={metrics['auc']:.2f}%"
@@ -368,7 +389,61 @@ def train_fold_in_thread(genome: dict, fold_num: int, config: dict, device: torc
         return fold_num, 0.0, None, None
 
 
-def load_fold_data(fold_number: int, config: dict, device: torch.device) -> Tuple[DataLoader, DataLoader]:
+def _reshape_features_if_needed(x_values: np.ndarray) -> np.ndarray:
+    """Ensures 2D sequence arrays include a channel dimension."""
+    if len(x_values.shape) == 2:
+        return x_values.reshape((x_values.shape[0], 1, x_values.shape[1]))
+    return x_values
+
+
+def _load_split_dataset(
+    fold_files_directory: str,
+    dataset_id: str,
+    fold_number: int,
+    split_name: str,
+    cache_mode: str,
+) -> torch.utils.data.TensorDataset:
+    """Loads one fold split and converts it to a TensorDataset."""
+    x_values = _load_numpy_array(
+        os.path.join(fold_files_directory, f'X_{split_name}_{dataset_id}_fold_{fold_number}.npy'),
+        cache_mode,
+    )
+    y_values = _load_numpy_array(
+        os.path.join(fold_files_directory, f'y_{split_name}_{dataset_id}_fold_{fold_number}.npy'),
+        cache_mode,
+    )
+
+    x_tensor = torch.tensor(_reshape_features_if_needed(x_values), dtype=torch.float32)
+    y_tensor = torch.tensor(y_values, dtype=torch.long)
+    return torch.utils.data.TensorDataset(x_tensor, y_tensor)
+
+
+def _build_dataloader(
+    dataset: torch.utils.data.TensorDataset,
+    config: dict,
+    device: torch.device,
+    shuffle: bool,
+) -> DataLoader:
+    """Creates a DataLoader using the configured worker settings."""
+    num_workers, persistent_workers, prefetch_factor, pin_memory = _resolve_dataloader_settings(config, device)
+    loader_kwargs = {
+        'batch_size': config['batch_size'],
+        'num_workers': num_workers,
+        'pin_memory': pin_memory,
+    }
+    if num_workers > 0:
+        loader_kwargs['persistent_workers'] = persistent_workers
+        loader_kwargs['prefetch_factor'] = prefetch_factor
+
+    return DataLoader(dataset, shuffle=shuffle, **loader_kwargs)
+
+
+def load_fold_data(
+    fold_number: int,
+    config: dict,
+    device: torch.device,
+    eval_split: str = 'validation',
+) -> Tuple[DataLoader, ...]:
     """
     Carga los datos de un fold especifico para el entrenamiento.
 
@@ -376,23 +451,29 @@ def load_fold_data(fold_number: int, config: dict, device: torch.device) -> Tupl
         fold_number: Numero de fold (1-5)
         config: Configuration dictionary
         device: PyTorch device (CPU or CUDA)
+        eval_split: Which evaluation split to load. Use "validation" for
+            evolutionary fitness, "test" for final reporting,
+            "validation_and_test" only for explicit legacy compatibility, or
+            "all" to return train, validation, and test loaders separately.
 
     Returns:
-        Tuple de (train_loader, test_loader)
+        Tuple de DataLoaders. Returns (train, eval) for split-specific modes
+        or (train, validation, test) for eval_split="all".
     """
+    eval_split = _normalize_eval_split(eval_split)
     cache_mode = _resolve_cache_mode(config)
     cache_enabled = cache_mode in {'ram', 'memmap'}
 
     if not cache_enabled:
-        return _load_fold_data_uncached(fold_number, config, device, cache_mode)
+        return _load_fold_data_uncached(fold_number, config, device, cache_mode, eval_split)
 
-    cache_key = _build_fold_cache_key(fold_number, config, device, cache_mode)
+    cache_key = _build_fold_cache_key(fold_number, config, device, cache_mode, eval_split)
     with _FOLD_DATALOADER_CACHE_LOCK:
         cached = _FOLD_DATALOADER_CACHE.get(cache_key)
     if cached is not None:
         return cached
 
-    loaded = _load_fold_data_uncached(fold_number, config, device, cache_mode)
+    loaded = _load_fold_data_uncached(fold_number, config, device, cache_mode, eval_split)
     with _FOLD_DATALOADER_CACHE_LOCK:
         # Avoid duplicate work if another thread loaded the same key in parallel.
         existing = _FOLD_DATALOADER_CACHE.get(cache_key)
@@ -407,78 +488,76 @@ def _load_fold_data_uncached(
     config: dict,
     device: torch.device,
     cache_mode: str,
-) -> Tuple[DataLoader, DataLoader]:
+    eval_split: str,
+) -> Tuple[DataLoader, ...]:
     """Loads fold data and creates DataLoaders without cache lookup."""
+    eval_split = _normalize_eval_split(eval_split)
     fold_files_directory = _resolve_fold_files_directory(config)
     dataset_id = config['dataset_id']
 
-    # Cargar datos del fold (RAM o memmap segun config)
-    x_train = _load_numpy_array(
-        os.path.join(fold_files_directory, f'X_train_{dataset_id}_fold_{fold_number}.npy'),
+    train_dataset = _load_split_dataset(
+        fold_files_directory,
+        dataset_id,
+        fold_number,
+        'train',
         cache_mode,
     )
-    y_train = _load_numpy_array(
-        os.path.join(fold_files_directory, f'y_train_{dataset_id}_fold_{fold_number}.npy'),
-        cache_mode,
-    )
-    x_val = _load_numpy_array(
-        os.path.join(fold_files_directory, f'X_val_{dataset_id}_fold_{fold_number}.npy'),
-        cache_mode,
-    )
-    y_val = _load_numpy_array(
-        os.path.join(fold_files_directory, f'y_val_{dataset_id}_fold_{fold_number}.npy'),
-        cache_mode,
-    )
-    x_test = _load_numpy_array(
-        os.path.join(fold_files_directory, f'X_test_{dataset_id}_fold_{fold_number}.npy'),
-        cache_mode,
-    )
-    y_test = _load_numpy_array(
-        os.path.join(fold_files_directory, f'y_test_{dataset_id}_fold_{fold_number}.npy'),
-        cache_mode,
-    )
+    fold_train_loader = _build_dataloader(train_dataset, config, device, shuffle=True)
 
-    # Reshape si es necesario
-    if len(x_train.shape) == 2:
-        x_train = x_train.reshape((x_train.shape[0], 1, x_train.shape[1]))
-        x_val = x_val.reshape((x_val.shape[0], 1, x_val.shape[1]))
-        x_test = x_test.reshape((x_test.shape[0], 1, x_test.shape[1]))
+    if eval_split == 'all':
+        validation_dataset = _load_split_dataset(
+            fold_files_directory,
+            dataset_id,
+            fold_number,
+            'val',
+            cache_mode,
+        )
+        test_dataset = _load_split_dataset(
+            fold_files_directory,
+            dataset_id,
+            fold_number,
+            'test',
+            cache_mode,
+        )
+        return (
+            fold_train_loader,
+            _build_dataloader(validation_dataset, config, device, shuffle=False),
+            _build_dataloader(test_dataset, config, device, shuffle=False),
+        )
 
-    # Convertir a tensores (una vez cuando se activa cache)
-    x_train_tensor = torch.tensor(x_train, dtype=torch.float32)
-    y_train_tensor = torch.tensor(y_train, dtype=torch.long)
-    x_val_tensor = torch.tensor(x_val, dtype=torch.float32)
-    y_val_tensor = torch.tensor(y_val, dtype=torch.long)
-    x_test_tensor = torch.tensor(x_test, dtype=torch.float32)
-    y_test_tensor = torch.tensor(y_test, dtype=torch.long)
+    if eval_split == 'validation':
+        eval_dataset = _load_split_dataset(
+            fold_files_directory,
+            dataset_id,
+            fold_number,
+            'val',
+            cache_mode,
+        )
+    elif eval_split == 'test':
+        eval_dataset = _load_split_dataset(
+            fold_files_directory,
+            dataset_id,
+            fold_number,
+            'test',
+            cache_mode,
+        )
+    else:
+        validation_dataset = _load_split_dataset(
+            fold_files_directory,
+            dataset_id,
+            fold_number,
+            'val',
+            cache_mode,
+        )
+        test_dataset = _load_split_dataset(
+            fold_files_directory,
+            dataset_id,
+            fold_number,
+            'test',
+            cache_mode,
+        )
+        x_eval = torch.cat([validation_dataset.tensors[0], test_dataset.tensors[0]], dim=0)
+        y_eval = torch.cat([validation_dataset.tensors[1], test_dataset.tensors[1]], dim=0)
+        eval_dataset = torch.utils.data.TensorDataset(x_eval, y_eval)
 
-    # Crear datasets
-    train_dataset = torch.utils.data.TensorDataset(x_train_tensor, y_train_tensor)
-    x_eval = torch.cat([x_val_tensor, x_test_tensor], dim=0)
-    y_eval = torch.cat([y_val_tensor, y_test_tensor], dim=0)
-    test_dataset = torch.utils.data.TensorDataset(x_eval, y_eval)
-
-    num_workers, persistent_workers, prefetch_factor, pin_memory = _resolve_dataloader_settings(config, device)
-    loader_kwargs = {
-        'batch_size': config['batch_size'],
-        'num_workers': num_workers,
-        'pin_memory': pin_memory,
-    }
-    if num_workers > 0:
-        loader_kwargs['persistent_workers'] = persistent_workers
-        loader_kwargs['prefetch_factor'] = prefetch_factor
-
-    # Crear DataLoaders
-    fold_train_loader = DataLoader(
-        train_dataset,
-        shuffle=True,
-        **loader_kwargs,
-    )
-
-    fold_test_loader = DataLoader(
-        test_dataset,
-        shuffle=False,
-        **loader_kwargs,
-    )
-
-    return fold_train_loader, fold_test_loader
+    return fold_train_loader, _build_dataloader(eval_dataset, config, device, shuffle=False)
