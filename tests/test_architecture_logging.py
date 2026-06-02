@@ -31,7 +31,7 @@ def test_residual_architecture_log_describes_conv_units_inside_blocks(tmp_path):
         "residual_block_size": 2,
         "inception_enabled": False,
     }
-    expected = "residual Conv1D blocks, 7 conv units, block_size=2, 1 fc"
+    expected = "res, 7C, 1FC"
     engine = HybridNeuroevolution(small_config(tmp_path), torch.device("cpu"))
 
     assert engine._format_architecture(genome) == expected
@@ -48,7 +48,22 @@ def test_inception_architecture_log_describes_modules_and_branch_options(tmp_pat
         "inception_reduction_ratio": 0.5,
         "inception_pool_branch": True,
     }
-    expected = "inception Conv1D modules, 7 conv units, reduction_ratio=0.5, pool_branch=True, 1 fc"
+    expected = "incep, 7C, 1FC"
+    engine = HybridNeuroevolution(small_config(tmp_path), torch.device("cpu"))
+
+    assert engine._format_architecture(genome) == expected
+    assert format_cv_architecture(genome) == expected
+    assert format_report_architecture(genome) == expected
+
+
+def test_sequential_architecture_log_uses_compact_counts(tmp_path):
+    genome = {
+        "num_conv_layers": 8,
+        "num_fc_layers": 6,
+        "residual_enabled": False,
+        "inception_enabled": False,
+    }
+    expected = "seq, 8C, 6FC"
     engine = HybridNeuroevolution(small_config(tmp_path), torch.device("cpu"))
 
     assert engine._format_architecture(genome) == expected

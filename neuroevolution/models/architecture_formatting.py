@@ -3,10 +3,7 @@
 
 def _fc_label(num_fc_layers: int) -> str:
     """Formats the fully connected layer count compactly."""
-    num_fc_layers = int(num_fc_layers)
-    if num_fc_layers == 1:
-        return "1 fc"
-    return f"{num_fc_layers} fc layers"
+    return f"{int(num_fc_layers)}FC"
 
 
 def format_genome_architecture(genome: dict) -> str:
@@ -14,26 +11,16 @@ def format_genome_architecture(genome: dict) -> str:
     num_conv_layers = int(genome['num_conv_layers'])
     num_fc_layers = int(genome['num_fc_layers'])
     fc_label = _fc_label(num_fc_layers)
+    conv_label = f"{num_conv_layers}C"
 
     if genome.get('inception_enabled', False):
-        return (
-            "inception Conv1D modules, "
-            f"{num_conv_layers} conv units, "
-            f"reduction_ratio={genome.get('inception_reduction_ratio', 0.5)}, "
-            f"pool_branch={genome.get('inception_pool_branch', True)}, "
-            f"{fc_label}"
-        )
-
-    if genome.get('residual_enabled', False):
-        return (
-            "residual Conv1D blocks, "
-            f"{num_conv_layers} conv units, "
-            f"block_size={genome.get('residual_block_size', 2)}, "
-            f"{fc_label}"
-        )
-
-    if num_conv_layers == 1:
-        conv_label = "1 conv layer"
+        base = f"incep, {conv_label}, {fc_label}"
+    elif genome.get('residual_enabled', False):
+        base = f"res, {conv_label}, {fc_label}"
     else:
-        conv_label = f"{num_conv_layers} conv layers"
-    return f"sequential Conv1D stack, {conv_label}, {fc_label}"
+        base = f"seq, {conv_label}, {fc_label}"
+
+    template_id = genome.get('architecture_template_id')
+    if template_id:
+        return f"{base}, tpl={template_id}"
+    return base

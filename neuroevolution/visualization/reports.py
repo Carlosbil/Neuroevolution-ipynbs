@@ -48,6 +48,10 @@ def display_best_architecture(
     print(f"   Dataset: {config['dataset']}")
     print(f"   Dataset ID: {config.get('dataset_id', 'N/A')}")
     print(f"   Fold: {config.get('current_fold', 'N/A')}")
+    if best_genome.get("architecture_template_id"):
+        print(f"   Template: {best_genome.get('architecture_template_id')}")
+        print(f"   Template Family: {best_genome.get('architecture_template_family', 'N/A')}")
+        print(f"   Template Origin: {best_genome.get('architecture_template_origin', 'N/A')}")
 
     print("\nNETWORK ARCHITECTURE:")
     print(f"   Input: 1D Audio Signal (length={config['sequence_length']})")
@@ -129,6 +133,9 @@ def display_best_architecture(
     print(f"{'ID':<25} {best_genome['id']:<30} {'Unique identifier':<25}")
     print(f"{'Fitness':<25} {best_genome['fitness']:.2f}%{'':<25} {'Accuracy achieved':<25}")
     print(f"{'Architecture':<25} {_format_architecture(best_genome):<30} {'1D Convolutional':<25}")
+    if best_genome.get("architecture_template_id"):
+        print(f"{'Template':<25} {best_genome.get('architecture_template_id'):<30} {'Known architecture seed':<25}")
+        print(f"{'Template Family':<25} {best_genome.get('architecture_template_family', 'N/A'):<30} {'Template lineage':<25}")
     print(f"{'Conv Layers':<25} {best_genome['num_conv_layers']:<30} {'Conv1D layers':<25}")
     print(f"{'Residual':<25} {str(best_genome.get('residual_enabled', False)):<30} {'Residual Conv1D blocks':<25}")
     if best_genome.get("residual_enabled", False):
@@ -210,6 +217,10 @@ def print_checkpoint_info(neuroevolution, device: torch.device) -> None:
             print(
                 f"    Arquitectura: {_format_architecture(checkpoint_data['genome'])}"
             )
+            if checkpoint_data['genome'].get('architecture_template_id'):
+                print(f"    Template: {checkpoint_data['genome'].get('architecture_template_id')}")
+                print(f"    Template Family: {checkpoint_data['genome'].get('architecture_template_family', 'N/A')}")
+                print(f"    Template Origin: {checkpoint_data['genome'].get('architecture_template_origin', 'N/A')}")
             print(f"    Residual: {checkpoint_data['genome'].get('residual_enabled', False)}")
             if checkpoint_data['genome'].get('residual_enabled', False):
                 print(f"    Residual Block Size: {checkpoint_data['genome'].get('residual_block_size', 2)}")

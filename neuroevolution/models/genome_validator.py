@@ -13,6 +13,9 @@ DEFAULT_CONV_TOPOLOGY = "sequential"
 DEFAULT_INCEPTION_REDUCTION_RATIO = 0.5
 DEFAULT_INCEPTION_POOL_BRANCH = True
 DEFAULT_INCEPTION_MIN_BRANCH_CHANNELS = 1
+RANDOM_TEMPLATE_ORIGIN = "random"
+INITIAL_TEMPLATE_ORIGIN = "initial_seed"
+MUTATION_TEMPLATE_ORIGIN = "mutation_module"
 
 
 def _get_residual_block_options(config: dict) -> list:
@@ -227,6 +230,24 @@ def normalize_conv_topology_fields(genome: dict, config: dict) -> dict:
         for index, kernel_size in enumerate(genome.get('kernel_sizes', [])):
             genome['kernel_sizes'][index] = _normalize_odd_kernel(kernel_size, minimum=5)
 
+    return genome
+
+
+def normalize_template_provenance_fields(genome: dict) -> dict:
+    """Normalizes optional architecture-template provenance fields in-place."""
+    template_id = genome.get('architecture_template_id')
+    template_family = genome.get('architecture_template_family')
+    origin = genome.get('architecture_template_origin')
+
+    if not template_id and not template_family:
+        if origin in (None, RANDOM_TEMPLATE_ORIGIN):
+            genome.pop('architecture_template_id', None)
+            genome.pop('architecture_template_family', None)
+            genome.pop('architecture_template_origin', None)
+        return genome
+
+    if origin not in {INITIAL_TEMPLATE_ORIGIN, MUTATION_TEMPLATE_ORIGIN}:
+        genome['architecture_template_origin'] = RANDOM_TEMPLATE_ORIGIN
     return genome
 
 
@@ -489,6 +510,7 @@ def validate_and_fix_genome(genome: dict, config: dict) -> dict:
             )
     
     normalize_conv_topology_fields(genome, config)
+    normalize_template_provenance_fields(genome)
 
     return genome
 

@@ -6,6 +6,7 @@ import random
 import copy
 import uuid
 from neuroevolution.config import ACTIVATION_FUNCTIONS, OPTIMIZERS
+from neuroevolution.genetics.architecture_templates import apply_template_module_to_genome
 from neuroevolution.models.genome_validator import (
     calculate_max_safe_conv_layers,
     is_genome_valid,
@@ -242,6 +243,12 @@ def mutate_genome(genome: dict, config: dict) -> dict:
 
         if random.random() < config.get('inception_mutation_weight', 0.15):
             _mutate_inception_topology(mutated_genome, config)
+
+        if random.random() < config.get('architecture_template_mutation_weight', 0.0):
+            try:
+                mutated_genome = apply_template_module_to_genome(mutated_genome, config)
+            except ValueError:
+                continue
 
         # Mutate filters
         for i in range(len(mutated_genome['filters'])):

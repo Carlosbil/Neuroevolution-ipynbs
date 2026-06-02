@@ -553,6 +553,10 @@ class EvolvableCNN(nn.Module):
         summary.append(f"Activations: {self.genome['activations']}")
         summary.append(f"Normalization: {self.genome.get('normalization_type', 'batch')}")
         summary.append(f"Topology: {self.genome.get('conv_topology', 'sequential')}")
+        if self.genome.get('architecture_template_id'):
+            summary.append(f"Template: {self.genome.get('architecture_template_id')}")
+            summary.append(f"Template Family: {self.genome.get('architecture_template_family', 'unknown')}")
+            summary.append(f"Template Origin: {self.genome.get('architecture_template_origin', 'unknown')}")
         summary.append(f"Residual Mode: {self.genome.get('residual_enabled', False)}")
         if self.genome.get('residual_enabled', False):
             summary.append(f"Residual Block Size: {self.genome.get('residual_block_size', 2)}")

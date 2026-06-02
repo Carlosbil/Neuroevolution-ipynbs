@@ -15,17 +15,32 @@ import copy
 import random
 import uuid
 import json
+import time
 import numpy as np
 import torch
 import torch.nn as nn
 from typing import Dict, Optional
 
 from ..genetics.genome import create_random_genome
+from ..genetics.architecture_templates import (
+    choose_template,
+    create_template_genome,
+)
 from ..genetics.mutation import mutate_genome
 from ..genetics.crossover import crossover_genomes
+from ..genetics.selection import (
+    DEFAULT_PARETO_OBJECTIVES,
+    assign_pareto_metadata,
+    pareto_selection_key,
+    tournament_selection as select_tournament,
+)
 from ..genetics.innovation import build_innovation_genes, append_structural_event
 from ..models.architecture_formatting import format_genome_architecture
-from ..models.genome_validator import calculate_max_safe_conv_layers, validate_and_fix_genome
+from ..models.genome_validator import (
+    calculate_max_safe_conv_layers,
+    estimate_genome_parameter_count,
+    validate_and_fix_genome,
+)
 from ..models.evolvable_cnn import EvolvableCNN
 from .fitness import evaluate_fitness
 
@@ -66,10 +81,86 @@ class HybridNeuroevolution:
         self.config.setdefault('species_elite_min', 1)
         self.config.setdefault('species_survival_rate', 0.5)
 
+        # Selection defaults keep older ad hoc configs runnable while the
+        # canonical default config enables Pareto selection explicitly.
+        self.config.setdefault('selection_strategy', 'pareto')
+        self.config.setdefault('pareto_objectives', copy.deepcopy(DEFAULT_PARETO_OBJECTIVES))
+        self.config.setdefault('pareto_tie_breaker', 'crowding_distance')
+        self.config.setdefault('pareto_fitness_epsilon', 0.0)
+
         self.config['current_max_conv_layers'] = self.config['initial_max_conv_layers']
         self.config['current_max_fc_layers'] = self.config['initial_max_fc_layers']
 
         self.species = {}
+
+    def _uses_pareto_selection(self) -> bool:
+        """Returns whether reproduction should use Pareto rank metadata."""
+        return str(self.config.get('selection_strategy', 'fitness')).lower() == 'pareto'
+
+    def _assign_selection_metadata(self):
+        """Assigns Pareto metadata when the configured strategy requires it."""
+        if not self._uses_pareto_selection():
+            return
+
+        assign_pareto_metadata(
+            self.population,
+            self.config.get('pareto_objectives', DEFAULT_PARETO_OBJECTIVES),
+            float(self.config.get('pareto_fitness_epsilon', 0.0)),
+        )
+
+    def _record_cost_metadata(self, genome: dict, metrics: dict, elapsed_seconds: Optional[float] = None):
+        """Stores individual-level cost metadata on the genome and metrics."""
+        if elapsed_seconds is not None:
+            genome['evaluation_time_seconds'] = float(elapsed_seconds)
+        elif 'evaluation_time_seconds' not in genome:
+            genome['evaluation_time_seconds'] = metrics.get('evaluation_time_seconds')
+        metrics['evaluation_time_seconds'] = genome.get('evaluation_time_seconds')
+
+        parameter_count = genome.get('parameter_count', metrics.get('parameter_count'))
+        if parameter_count is None:
+            try:
+                parameter_count = int(estimate_genome_parameter_count(genome, self.config))
+            except Exception as e:
+                parameter_count = None
+                print(f"      WARNING: Could not estimate parameter count for {genome.get('id', 'unknown')}: {e}")
+
+        genome['parameter_count'] = parameter_count
+        metrics['parameter_count'] = parameter_count
+
+    def _sync_selection_metadata_to_metrics(self, genome: dict, metrics: dict):
+        """Copies selection metadata into metrics for progress artifacts."""
+        for key in (
+            'evaluation_time_seconds',
+            'parameter_count',
+            'pareto_rank',
+            'crowding_distance',
+            'selection_objectives',
+        ):
+            if key in genome:
+                metrics[key] = genome[key]
+
+    @staticmethod
+    def _format_seconds(value) -> str:
+        """Formats an optional elapsed-time value for logs."""
+        if value is None:
+            return "NA"
+        return f"{float(value):.3f}"
+
+    @staticmethod
+    def _format_parameter_count(value) -> str:
+        """Formats an optional parameter count for logs."""
+        if value is None:
+            return "NA"
+        return str(int(value))
+
+    @staticmethod
+    def _format_crowding_distance(value) -> str:
+        """Formats crowding distance for compact logs."""
+        if value is None:
+            return "NA"
+        if np.isinf(float(value)):
+            return "inf"
+        return f"{float(value):.3f}"
 
     def _append_generation_log(self, text: str):
         """Appends text to generation log file."""
@@ -97,7 +188,12 @@ class HybridNeuroevolution:
             'generations_without_improvement': self.generations_without_improvement,
             'best_fitness_overall': self.best_fitness_overall,
             'best_fitness_for_early_stopping': self.best_fitness_for_early_stopping,
-            'best_checkpoint_path': self.best_checkpoint_path
+            'best_checkpoint_path': self.best_checkpoint_path,
+            'selection_strategy': self.config.get('selection_strategy', 'fitness'),
+            'pareto_objectives': self._to_json_serializable(
+                self.config.get('pareto_objectives', DEFAULT_PARETO_OBJECTIVES)
+            ),
+            'pareto_fitness_epsilon': float(self.config.get('pareto_fitness_epsilon', 0.0)),
         }
 
         with open(self.progress_json_path, 'w', encoding='utf-8') as progress_file:
@@ -205,6 +301,81 @@ class HybridNeuroevolution:
             }
         )
         return genome
+
+    def _template_seed_quota(self, regular_population_size: int) -> int:
+        """Returns how many regular initial slots can be template-derived."""
+        regular_population_size = max(0, int(regular_population_size))
+        if regular_population_size <= 0:
+            return 0
+
+        seed_fraction = float(self.config.get('architecture_template_seed_fraction', 0.0))
+        if seed_fraction <= 0:
+            return 0
+
+        min_random_fraction = float(self.config.get('architecture_template_seed_min_random_fraction', 0.0))
+        requested_template_slots = int(np.floor(regular_population_size * seed_fraction))
+        random_slots_required = int(np.ceil(regular_population_size * min_random_fraction))
+        max_template_slots = max(0, regular_population_size - random_slots_required)
+        return max(0, min(requested_template_slots, max_template_slots))
+
+    @staticmethod
+    def _interleaved_template_slots(regular_population_size: int, template_seed_quota: int) -> set:
+        """Returns population indexes for template seeds without grouping them at the front."""
+        if template_seed_quota <= 0:
+            return set()
+        return {
+            min(
+                regular_population_size - 1,
+                int(((slot_index + 0.5) * regular_population_size) / template_seed_quota),
+            )
+            for slot_index in range(template_seed_quota)
+        }
+
+    def _create_template_seed_individual(
+        self,
+        quartile_config: dict,
+        index_in_population: int,
+        quartile_number: int,
+        conv_quartile_cap: int,
+        fc_quartile_cap: int,
+    ) -> dict:
+        """Creates one initial individual from a configured architecture template."""
+        max_attempts = int(self.config.get('architecture_template_max_attempts', 20))
+        last_error = None
+
+        for _ in range(max_attempts):
+            try:
+                template = choose_template(quartile_config)
+                genome = create_template_genome(
+                    template.template_id,
+                    quartile_config,
+                    origin='initial_seed',
+                    event_payload={
+                        'index_in_population': int(index_in_population),
+                        'quartile': int(quartile_number),
+                        'conv_cap': int(conv_quartile_cap),
+                        'fc_cap': int(fc_quartile_cap),
+                    },
+                )
+                genome_safe_max_conv_layers = self._max_safe_conv_layers_for_genome(genome)
+                genome['num_conv_layers'] = max(
+                    self.config['min_conv_layers'],
+                    min(genome['num_conv_layers'], conv_quartile_cap, genome_safe_max_conv_layers),
+                )
+                genome['num_fc_layers'] = max(
+                    self.config['min_fc_layers'],
+                    min(genome['num_fc_layers'], fc_quartile_cap),
+                )
+                genome = validate_and_fix_genome(genome, quartile_config)
+                genome['innovation_genes'] = build_innovation_genes(genome)
+                genome['id'] = str(uuid.uuid4())[:8]
+                genome['fitness'] = 0.0
+                return genome
+            except ValueError as error:
+                last_error = error
+
+        print(f"WARNING: Could not create template seed after {max_attempts} attempts: {last_error}")
+        return create_random_genome(quartile_config)
 
     def _active_topology(self, genome: dict) -> str:
         """Returns the active Conv1D topology name."""
@@ -315,6 +486,10 @@ class HybridNeuroevolution:
         self.population = []
         min_conv_layers = int(self.config['min_conv_layers'])
         min_fc_layers = int(self.config['min_fc_layers'])
+        template_seed_quota = self._template_seed_quota(regular_population_size)
+        template_slots = self._interleaved_template_slots(regular_population_size, template_seed_quota)
+        if template_seed_quota:
+            print(f"Using {template_seed_quota} known architecture template seeds.")
 
         for i in range(regular_population_size):
             # Quartiles: Q1 -> 25% of max depth caps, Q2 -> 50%, Q3 -> 75%, Q4 -> 100%.
@@ -330,6 +505,17 @@ class HybridNeuroevolution:
             quartile_config = copy.deepcopy(self.config)
             quartile_config['current_max_conv_layers'] = conv_quartile_cap
             quartile_config['current_max_fc_layers'] = fc_quartile_cap
+
+            if i in template_slots:
+                genome = self._create_template_seed_individual(
+                    quartile_config,
+                    i,
+                    quartile_number,
+                    conv_quartile_cap,
+                    fc_quartile_cap,
+                )
+                self.population.append(genome)
+                continue
 
             genome = create_random_genome(quartile_config)
             genome_safe_max_conv_layers = self._max_safe_conv_layers_for_genome(genome)
@@ -450,6 +636,7 @@ class HybridNeuroevolution:
 
             skip_evaluation = bool(genome.pop('skip_next_evaluation', False))
             cached_metrics = genome.get('metrics')
+            elapsed_seconds = None
             if skip_evaluation and cached_metrics is not None:
                 fitness = float(genome.get('fitness', 0.0))
                 metrics = cached_metrics
@@ -462,11 +649,15 @@ class HybridNeuroevolution:
                 )
             else:
                 genome.pop('cached_from_generation', None)
+                start_time = time.perf_counter()
                 fitness, model, metrics = evaluate_fitness(genome, self.config, self.device)
+                elapsed_seconds = time.perf_counter() - start_time
                 genome['fitness'] = fitness
-                genome['metrics'] = metrics
                 evaluation_status = 'trained'
 
+            self._record_cost_metadata(genome, metrics, elapsed_seconds)
+            self._sync_selection_metadata_to_metrics(genome, metrics)
+            genome['metrics'] = metrics
             fitness_scores.append(fitness)
 
             individual_summary = {
@@ -475,6 +666,8 @@ class HybridNeuroevolution:
                 'architecture': self._format_architecture(genome),
                 'optimizer': genome['optimizer'],
                 'lr': genome['learning_rate'],
+                'evaluation_time_seconds': genome.get('evaluation_time_seconds'),
+                'parameter_count': genome.get('parameter_count'),
                 'metrics': metrics,
                 'evaluation_status': evaluation_status
             }
@@ -491,8 +684,20 @@ class HybridNeuroevolution:
             generation_log_lines.append(
                 f"Individual {i+1}/{len(self.population)} | ID={genome['id']} | "
                 f"status={evaluation_status} | fitness={fitness:.2f}% | "
+                f"time={self._format_seconds(genome.get('evaluation_time_seconds'))}s | "
+                f"params={self._format_parameter_count(genome.get('parameter_count'))} | "
                 f"best_gen={best_fitness_so_far:.2f}% | global_best={current_global_best_fitness:.2f}%"
             )
+
+        self._assign_selection_metadata()
+        for genome, individual_summary in zip(self.population, all_individual_metrics):
+            metrics = individual_summary['metrics']
+            self._sync_selection_metadata_to_metrics(genome, metrics)
+            individual_summary['evaluation_time_seconds'] = genome.get('evaluation_time_seconds')
+            individual_summary['parameter_count'] = genome.get('parameter_count')
+            individual_summary['pareto_rank'] = genome.get('pareto_rank')
+            individual_summary['crowding_distance'] = genome.get('crowding_distance')
+            individual_summary['selection_objectives'] = genome.get('selection_objectives')
 
         if fitness_scores:
             avg_fitness = np.mean(fitness_scores)
@@ -508,6 +713,8 @@ class HybridNeuroevolution:
             'max_fitness': max_fitness,
             'min_fitness': min_fitness,
             'std_fitness': std_fitness,
+            'selection_strategy': self.config.get('selection_strategy', 'fitness'),
+            'pareto_objectives': self.config.get('pareto_objectives', DEFAULT_PARETO_OBJECTIVES),
             'individual_metrics': all_individual_metrics
         }
         self.generation_stats.append(stats)
@@ -520,18 +727,31 @@ class HybridNeuroevolution:
         if self.best_individual is not None:
             self.best_fitness_overall = max(self.best_fitness_overall, self.best_individual['fitness'])
 
-        sorted_individuals = sorted(all_individual_metrics, key=lambda x: x['fitness'], reverse=True)
+        if self._uses_pareto_selection():
+            sorted_individuals = sorted(
+                all_individual_metrics,
+                key=lambda individual: pareto_selection_key(individual, self.config),
+            )
+        else:
+            sorted_individuals = sorted(all_individual_metrics, key=lambda x: x['fitness'], reverse=True)
 
         generation_log_lines.append("=" * 100)
         generation_log_lines.append(f"GENERATION {self.generation} - DETAILED METRICS SUMMARY")
         generation_log_lines.append("=" * 100)
-        generation_log_lines.append(f"{'ID':<15} {'Arch':<24} {'Acc':<10} {'Sen':<10} {'Spe':<10} {'Pre':<10} {'F1':<10} {'AUC':<10}")
+        generation_log_lines.append(
+            f"{'ID':<15} {'Arch':<24} {'Rank':<6} {'Crowd':<8} {'Time(s)':<9} "
+            f"{'Params':<12} {'Acc':<10} {'Sen':<10} {'Spe':<10} {'Pre':<10} {'F1':<10} {'AUC':<10}"
+        )
         generation_log_lines.append("-" * 100)
 
         for ind in sorted_individuals:
             m = ind['metrics']
             generation_log_lines.append(
                 f"{ind['id'][:13]:<15} {ind['architecture']:<24} "
+                f"{str(ind.get('pareto_rank', 'NA')):<6} "
+                f"{self._format_crowding_distance(ind.get('crowding_distance')):<8} "
+                f"{self._format_seconds(ind.get('evaluation_time_seconds')):<9} "
+                f"{self._format_parameter_count(ind.get('parameter_count')):<12} "
                 f"{m['accuracy']:>6.2f}%   {m['sensitivity']:>6.2f}%   "
                 f"{m['specificity']:>6.2f}%   {m['precision']:>6.2f}%   "
                 f"{m['f1_score']:>6.2f}%   {m['auc']:>6.2f}%"
@@ -563,6 +783,7 @@ class HybridNeuroevolution:
         generation_log_lines.append(f"   Standard deviation: {std_fitness:.2f}%")
         generation_log_lines.append(f"   Best individual: {best_genome['id']} with {best_genome['fitness']:.2f}%")
         generation_log_lines.append(f"   Global best individual: {self.best_individual['id']} with {self.best_individual['fitness']:.2f}%")
+        generation_log_lines.append(f"   Selection strategy: {self.config.get('selection_strategy', 'fitness')}")
 
         if best_genome.get('metrics'):
             bm = best_genome['metrics']
@@ -573,6 +794,12 @@ class HybridNeuroevolution:
             generation_log_lines.append(f"      Precision:    {bm['precision']:.2f}% +/- {bm['precision_std']:.2f}%")
             generation_log_lines.append(f"      F1-Score:     {bm['f1_score']:.2f}% +/- {bm['f1_score_std']:.2f}%")
             generation_log_lines.append(f"      AUC:          {bm['auc']:.2f}% +/- {bm['auc_std']:.2f}%")
+            generation_log_lines.append(
+                f"      Cost:         time={self._format_seconds(best_genome.get('evaluation_time_seconds'))}s, "
+                f"params={self._format_parameter_count(best_genome.get('parameter_count'))}, "
+                f"pareto_rank={best_genome.get('pareto_rank', 'NA')}, "
+                f"crowding={self._format_crowding_distance(best_genome.get('crowding_distance'))}"
+            )
 
         generation_log_lines.append("=" * 100)
 
@@ -588,9 +815,13 @@ class HybridNeuroevolution:
         """Selects best individuals and creates new generation through crossover and mutation."""
         print(f"\nStarting selection and reproduction...")
         self.config['current_generation'] = self.generation
-        
-        # Sort by fitness
-        self.population.sort(key=lambda x: x['fitness'], reverse=True)
+
+        if self._uses_pareto_selection():
+            self._assign_selection_metadata()
+            self.population.sort(key=lambda individual: pareto_selection_key(individual, self.config))
+        else:
+            self.population.sort(key=lambda x: x['fitness'], reverse=True)
+
         reserve_double_cap_slot = self.config['population_size'] > 1
         regular_target_size = (
             self.config['population_size'] - 1
@@ -604,7 +835,15 @@ class HybridNeuroevolution:
         
         print(f"Selecting {elite_size} elite individuals:")
         for i, individual in enumerate(self.population[:elite_size]):
-            print(f"   Elite {i+1}: {individual['id']} (fitness: {individual['fitness']:.2f}%)")
+            if self._uses_pareto_selection():
+                print(
+                    f"   Elite {i+1}: {individual['id']} "
+                    f"(rank: {individual.get('pareto_rank', 'NA')}, "
+                    f"crowding: {self._format_crowding_distance(individual.get('crowding_distance'))}, "
+                    f"fitness: {individual['fitness']:.2f}%)"
+                )
+            else:
+                print(f"   Elite {i+1}: {individual['id']} (fitness: {individual['fitness']:.2f}%)")
             elite_individual = copy.deepcopy(individual)
             elite_individual['skip_next_evaluation'] = True
             elite_individual['cached_from_generation'] = self.generation
@@ -643,8 +882,7 @@ class HybridNeuroevolution:
 
     def tournament_selection(self, tournament_size: int = 3) -> dict:
         """Selects best individual from a random tournament."""
-        tournament = random.sample(self.population, min(tournament_size, len(self.population)))
-        return max(tournament, key=lambda x: x['fitness'])
+        return select_tournament(self.population, self.config, tournament_size)
 
     def _update_adaptive_mutation(self):
         """Updates mutation rate based on population diversity."""
@@ -715,6 +953,10 @@ class HybridNeuroevolution:
         print(f"\n🏆 BEST INDIVIDUAL DETAILS:")
         print(f"   ID: {best['id']}")
         print(f"   Architecture: {self._format_architecture(best)}")
+        if best.get('architecture_template_id'):
+            print(f"   Template: {best.get('architecture_template_id')}")
+            print(f"   Template Family: {best.get('architecture_template_family', 'N/A')}")
+            print(f"   Template Origin: {best.get('architecture_template_origin', 'N/A')}")
         print(f"   Residual Enabled: {best.get('residual_enabled', False)}")
         if best.get('residual_enabled', False):
             print(f"   Residual Block Size: {best.get('residual_block_size', 2)}")
@@ -722,6 +964,12 @@ class HybridNeuroevolution:
         print(f"   Optimizer: {best['optimizer']}")
         print(f"   Learning Rate: {best['learning_rate']}")
         print(f"   Fitness: {best['fitness']:.2f}%")
+        if best.get('evaluation_time_seconds') is not None or best.get('parameter_count') is not None:
+            print(f"   Evaluation Time: {self._format_seconds(best.get('evaluation_time_seconds'))}s")
+            print(f"   Parameter Count: {self._format_parameter_count(best.get('parameter_count'))}")
+        if best.get('pareto_rank') is not None:
+            print(f"   Pareto Rank: {best.get('pareto_rank')}")
+            print(f"   Crowding Distance: {self._format_crowding_distance(best.get('crowding_distance'))}")
         
         if best.get('metrics'):
             m = best['metrics']
@@ -787,11 +1035,21 @@ class HybridNeuroevolution:
         print(f"   Target fitness: {self.config['fitness_threshold']}%")
         print(f"   Early stopping (generations): {self.config['early_stopping_generations']} without improvement")
         print(f"   Min improvement threshold: {self.config['min_improvement_threshold']}%")
+        print(f"   Selection strategy: {self.config.get('selection_strategy', 'fitness')}")
+        if self._uses_pareto_selection():
+            print(f"   Pareto objectives: {self.config.get('pareto_objectives', DEFAULT_PARETO_OBJECTIVES)}")
+            print(f"   Pareto fitness epsilon: {self.config.get('pareto_fitness_epsilon', 0.0)}")
         print(
             "   Residual search: "
             f"enabled_weight={self.config.get('residual_enabled_weight', 0.35)}, "
             f"disabled_weight={self.config.get('residual_disabled_weight', 0.65)}, "
             f"block_sizes={self.config.get('residual_block_size_options', [2, 3])}"
+        )
+        print(
+            "   Architecture templates: "
+            f"seed_fraction={self.config.get('architecture_template_seed_fraction', 0.0)}, "
+            f"mutation_weight={self.config.get('architecture_template_mutation_weight', 0.0)}, "
+            f"ids={self.config.get('architecture_template_ids', [])}"
         )
         print(f"   Device: {self.device}")
         print("="*80)

@@ -16,11 +16,99 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Tuple
 
 from ..models.evolvable_cnn import EvolvableCNN
-from ..config import OPTIMIZERS
+from ..config import OPTIMIZERS, SUPPORTED_METRIC_NAMES, canonical_metric_name
 
 _FOLD_DATALOADER_CACHE = {}
 _FOLD_DATALOADER_CACHE_LOCK = threading.Lock()
 _VALID_EVAL_SPLITS = {'validation', 'test', 'validation_and_test', 'all'}
+
+
+def resolve_metric_name(config: dict, key: str = 'fold_selection_metric') -> str:
+    """Resolves a configured metric name, including aliases and fitness indirection."""
+    default_metric = 'fitness_metric' if key == 'fold_selection_metric' else 'f1_score'
+    configured_metric = str(config.get(key, default_metric)).strip().lower()
+
+    if key == 'fold_selection_metric' and configured_metric == 'fitness_metric':
+        configured_metric = str(config.get('fitness_metric', 'f1_score')).strip().lower()
+
+    if configured_metric not in SUPPORTED_METRIC_NAMES:
+        valid_options = ', '.join(sorted(SUPPORTED_METRIC_NAMES | {'fitness_metric'}))
+        raise ValueError(f"{key} must be one of: {valid_options}")
+
+    return canonical_metric_name(configured_metric)
+
+
+def resolve_metric_improvement_threshold(config: dict) -> float:
+    """Returns the selected-metric improvement threshold with legacy fallback."""
+    threshold = config.get('metric_improvement_threshold')
+    if threshold is None:
+        threshold = config.get('improvement_threshold', 0.01)
+    return float(threshold)
+
+
+def metric_value(metrics: dict, metric_name: str) -> float:
+    """Fetches a numeric metric value, returning 0.0 for missing or invalid values."""
+    raw_name = str(metric_name).strip().lower()
+    canonical_name = canonical_metric_name(raw_name)
+    value = metrics.get(canonical_name)
+    if value is None and raw_name in metrics:
+        value = metrics.get(raw_name)
+
+    try:
+        numeric_value = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+    if not np.isfinite(numeric_value):
+        return 0.0
+    return numeric_value
+
+
+def compute_classification_metrics(y_true, y_pred, y_prob=None) -> dict:
+    """Computes binary classification metrics on the same percentage scale."""
+    y_true = np.asarray(y_true)
+    y_pred = np.asarray(y_pred)
+
+    if y_true.size == 0:
+        return {
+            'accuracy': 0.0,
+            'sensitivity': 0.0,
+            'specificity': 0.0,
+            'precision': 0.0,
+            'f1_score': 0.0,
+            'auc': 0.0,
+        }
+
+    tp = np.sum((y_true == 1) & (y_pred == 1))
+    tn = np.sum((y_true == 0) & (y_pred == 0))
+    fp = np.sum((y_true == 0) & (y_pred == 1))
+    fn = np.sum((y_true == 1) & (y_pred == 0))
+
+    accuracy = 100.0 * (tp + tn) / max(1, len(y_true))
+    sensitivity = 100.0 * tp / max(1, tp + fn)
+    specificity = 100.0 * tn / max(1, tn + fp)
+    precision = 100.0 * tp / max(1, tp + fp)
+    f1_score = 2.0 * precision * sensitivity / max(1e-8, precision + sensitivity)
+
+    auc = 0.0
+    if y_prob is not None and len(np.unique(y_true)) > 1:
+        try:
+            y_prob = np.asarray(y_prob)
+            if y_prob.ndim == 2:
+                y_prob = y_prob[:, 1] if y_prob.shape[1] > 1 else y_prob[:, 0]
+            from sklearn.metrics import roc_auc_score
+            auc = float(roc_auc_score(y_true, y_prob) * 100.0)
+        except Exception:
+            auc = 0.0
+
+    return {
+        'accuracy': float(accuracy),
+        'sensitivity': float(sensitivity),
+        'specificity': float(specificity),
+        'precision': float(precision),
+        'f1_score': float(f1_score),
+        'auc': float(auc),
+    }
 
 
 def _normalize_eval_split(eval_split: str) -> str:
@@ -101,7 +189,7 @@ def evaluate_fitness(genome: dict, config: dict, device: torch.device) -> Tuple[
     """
     Evalua el fitness de un genoma usando 5-fold cross-validation PARALELO.
     Los 5 folds se entrenan en threads separados y se espera a que terminen todos.
-    El fitness final es el promedio de F1-score de los 5 folds.
+    El fitness final es el promedio de la métrica de fitness configurada.
 
     Args:
         genome: Genome dictionary defining the architecture
@@ -110,17 +198,21 @@ def evaluate_fitness(genome: dict, config: dict, device: torch.device) -> Tuple[
 
     Returns:
         Tuple de (fitness, model, metrics) donde:
-            - fitness: promedio de F1-score de los 5 folds
+            - fitness: promedio de la métrica configurada de los 5 folds
             - model: modelo entrenado en el mejor fold (para checkpoint)
             - metrics: diccionario con metricas agregadas de todos los folds
     """
     print(f"      Training/Evaluating model {genome['id']} with PARALLEL 5-FOLD CROSS-VALIDATION")
 
-    fold_accuracies = {}
+    fold_scores = {}
     fold_models = {}
     fold_metrics = {}
+    fitness_metric = 'f1_score'
+    selection_metric = 'f1_score'
 
     try:
+        fitness_metric = resolve_metric_name(config, 'fitness_metric')
+        selection_metric = resolve_metric_name(config, 'fold_selection_metric')
         num_folds = int(config.get('num_folds', 5))
         fold_workers = max(1, min(int(config.get('fold_parallel_workers', num_folds)), num_folds))
 
@@ -137,22 +229,22 @@ def evaluate_fitness(genome: dict, config: dict, device: torch.device) -> Tuple[
             print(f"      -> Waiting for all {num_folds} folds to complete...")
             for future in as_completed(futures):
                 fold_num, fold_score, model, metrics = future.result()
-                fold_accuracies[fold_num] = fold_score
+                fold_scores[fold_num] = fold_score
                 fold_models[fold_num] = model
                 fold_metrics[fold_num] = metrics
 
         # Ordenar resultados por fold_num
-        sorted_folds = sorted(fold_accuracies.keys())
-        f1_scores_list = [fold_accuracies[f] for f in sorted_folds]
+        sorted_folds = sorted(fold_scores.keys())
+        fold_scores_list = [fold_scores[f] for f in sorted_folds]
 
         # Encontrar el mejor modelo
-        best_fold_num = max(fold_accuracies, key=fold_accuracies.get)
-        best_fold_f1 = fold_accuracies[best_fold_num]
+        best_fold_num = max(fold_scores, key=fold_scores.get)
+        best_fold_score = fold_scores[best_fold_num]
         best_model = fold_models[best_fold_num]
 
         # Calcular fitness como promedio de los 5 folds
-        avg_fitness = np.mean(f1_scores_list)
-        std_fitness = np.std(f1_scores_list)
+        avg_fitness = np.mean(fold_scores_list)
+        std_fitness = np.std(fold_scores_list)
 
         # Agregar metricas de todos los folds (solo los folds validos)
         valid_metrics = [m for m in fold_metrics.values() if m is not None]
@@ -173,7 +265,9 @@ def evaluate_fitness(genome: dict, config: dict, device: torch.device) -> Tuple[
                 'auc_std': np.std([m['auc'] for m in valid_metrics]),
                 'fold_metrics': fold_metrics,
                 'n_valid_folds': len(valid_metrics),
-                'fitness_split': 'validation'
+                'fitness_split': 'validation',
+                'fitness_metric': fitness_metric,
+                'selection_metric': selection_metric,
             }
         else:
             aggregated_metrics = {
@@ -185,13 +279,15 @@ def evaluate_fitness(genome: dict, config: dict, device: torch.device) -> Tuple[
                 'auc': 0.0, 'auc_std': 0.0,
                 'fold_metrics': {},
                 'n_valid_folds': 0,
-                'fitness_split': 'validation'
+                'fitness_split': 'validation',
+                'fitness_metric': fitness_metric,
+                'selection_metric': selection_metric,
             }
 
         print(f"      + PARALLEL 5-Fold CV Results for {genome['id']}:")
-        print(f"        Fold validation F1-scores: {[f'{score:.2f}%' for score in f1_scores_list]}")
+        print(f"        Fold validation {fitness_metric} scores: {[f'{score:.2f}%' for score in fold_scores_list]}")
         print(f"        Average validation fitness: {avg_fitness:.2f}% +/- {std_fitness:.2f}%")
-        print(f"        Best fold: Fold {best_fold_num} with {best_fold_f1:.2f}% validation F1")
+        print(f"        Best fold: Fold {best_fold_num} with {best_fold_score:.2f}% validation {fitness_metric}")
         print("        --- AGGREGATED METRICS ---")
         print(f"        Accuracy:     {aggregated_metrics['accuracy']:.2f}% +/- {aggregated_metrics['accuracy_std']:.2f}%")
         print(f"        Sensitivity:  {aggregated_metrics['sensitivity']:.2f}% +/- {aggregated_metrics['sensitivity_std']:.2f}%")
@@ -215,7 +311,9 @@ def evaluate_fitness(genome: dict, config: dict, device: torch.device) -> Tuple[
             'auc': 0.0, 'auc_std': 0.0,
             'fold_metrics': {},
             'n_valid_folds': 0,
-            'fitness_split': 'validation'
+            'fitness_split': 'validation',
+            'fitness_metric': fitness_metric,
+            'selection_metric': selection_metric,
         }
         return 0.0, None, empty_metrics
 
@@ -253,11 +351,15 @@ def train_fold_in_thread(genome: dict, fold_num: int, config: dict, device: torc
         optimizer = optimizer_class(model.parameters(), lr=genome['learning_rate'])
         criterion = nn.CrossEntropyLoss()
 
-        best_validation_acc = 0.0
+        fitness_metric = resolve_metric_name(config, 'fitness_metric')
+        selection_metric = resolve_metric_name(config, 'fold_selection_metric')
+        best_selection_score = float('-inf')
+        best_selection_metrics = None
+        best_epoch = 0
         best_state = None
         patience_left = int(config.get('epoch_patience', 10))
         max_epochs = int(config.get('num_epochs', 30))
-        improvement_threshold = float(config.get('improvement_threshold', 0.01))
+        improvement_threshold = resolve_metric_improvement_threshold(config)
         validation_frequency = max(1, int(config.get('validation_frequency_epochs', 2)))
 
         amp_enabled = bool(config.get('use_amp', True)) and device.type == 'cuda'
@@ -297,22 +399,33 @@ def train_fold_in_thread(genome: dict, fold_num: int, config: dict, device: torc
                 continue
 
             model.eval()
-            correct = 0
-            total = 0
+            validation_targets = []
+            validation_preds = []
+            validation_probs = []
             with torch.no_grad():
                 for data, target in fold_validation_loader:
                     data = data.to(device, non_blocking=True)
                     target = target.to(device, non_blocking=True)
                     with torch.autocast(device_type=autocast_device_type, dtype=amp_dtype, enabled=amp_enabled):
                         output = model(data)
+                    probs = F.softmax(output, dim=1)
                     _, predicted = torch.max(output, 1)
-                    total += target.size(0)
-                    correct += (predicted == target).sum().item()
 
-            validation_acc = 100.0 * correct / max(1, total)
+                    validation_targets.extend(target.cpu().numpy().tolist())
+                    validation_preds.extend(predicted.cpu().numpy().tolist())
+                    validation_probs.extend(probs[:, 1].cpu().numpy().tolist())
 
-            if validation_acc > (best_validation_acc + improvement_threshold):
-                best_validation_acc = validation_acc
+            validation_metrics = compute_classification_metrics(
+                validation_targets,
+                validation_preds,
+                validation_probs,
+            )
+            current_selection_score = metric_value(validation_metrics, selection_metric)
+
+            if current_selection_score > (best_selection_score + improvement_threshold):
+                best_selection_score = current_selection_score
+                best_selection_metrics = validation_metrics
+                best_epoch = epoch_idx + 1
                 best_state = {k: v.detach().clone() for k, v in model.state_dict().items()}
                 patience_left = int(config.get('epoch_patience', 10))
             else:
@@ -341,46 +454,30 @@ def train_fold_in_thread(genome: dict, fold_num: int, config: dict, device: torc
                 all_preds.extend(predicted.cpu().numpy().tolist())
                 all_probs.extend(probs[:, 1].cpu().numpy().tolist())
 
-        y_true = np.array(all_targets)
-        y_pred = np.array(all_preds)
+        metrics = compute_classification_metrics(all_targets, all_preds, all_probs)
+        if best_selection_metrics is None:
+            best_selection_metrics = metrics
+            best_selection_score = metric_value(best_selection_metrics, selection_metric)
 
-        tp = np.sum((y_true == 1) & (y_pred == 1))
-        tn = np.sum((y_true == 0) & (y_pred == 0))
-        fp = np.sum((y_true == 0) & (y_pred == 1))
-        fn = np.sum((y_true == 1) & (y_pred == 0))
-
-        accuracy = 100.0 * (tp + tn) / max(1, len(y_true))
-        sensitivity = 100.0 * tp / max(1, tp + fn)
-        specificity = 100.0 * tn / max(1, tn + fp)
-        precision = 100.0 * tp / max(1, tp + fp)
-        f1_score = 2.0 * precision * sensitivity / max(1e-8, precision + sensitivity)
-
-        auc = 0.0
-        if len(np.unique(y_true)) > 1:
-            try:
-                from sklearn.metrics import roc_auc_score
-                auc = float(roc_auc_score(y_true, np.array(all_probs)) * 100.0)
-            except Exception:
-                auc = 0.0
-
-        metrics = {
-            'accuracy': float(accuracy),
-            'sensitivity': float(sensitivity),
-            'specificity': float(specificity),
-            'precision': float(precision),
-            'f1_score': float(f1_score),
-            'auc': float(auc),
+        metrics.update({
             'evaluation_split': 'validation',
-        }
+            'fitness_metric': fitness_metric,
+            'selection_metric': selection_metric,
+            'best_selection_score': float(best_selection_score),
+            'best_epoch': best_epoch,
+            'best_selection_metrics': best_selection_metrics,
+        })
 
         print(
             f"      -> Fold {fold_num} validation completed: "
+            f"selected_by={selection_metric} best={metrics['best_selection_score']:.2f}% "
+            f"epoch={best_epoch}, "
             f"Acc={metrics['accuracy']:.2f}%, Sen={metrics['sensitivity']:.2f}%, "
             f"Spe={metrics['specificity']:.2f}%, F1={metrics['f1_score']:.2f}%, "
             f"AUC={metrics['auc']:.2f}%"
         )
 
-        return fold_num, metrics['f1_score'], model, metrics
+        return fold_num, metric_value(metrics, fitness_metric), model, metrics
 
     except Exception as e:
         print(f"      ERROR in Fold {fold_num}: {e}")

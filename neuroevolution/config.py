@@ -9,6 +9,27 @@ import torch.nn as nn
 import torch.optim as optim
 
 
+METRIC_ALIASES = {
+    'recall': 'sensitivity',
+}
+
+SUPPORTED_METRIC_NAMES = {
+    'accuracy',
+    'precision',
+    'sensitivity',
+    'recall',
+    'specificity',
+    'f1_score',
+    'auc',
+}
+
+
+def canonical_metric_name(metric_name: str) -> str:
+    """Returns the canonical name for a supported classification metric."""
+    normalized = str(metric_name).strip().lower()
+    return METRIC_ALIASES.get(normalized, normalized)
+
+
 def get_activation_functions() -> dict:
     """Returns mapping of activation function names to PyTorch classes."""
     return {
@@ -58,6 +79,17 @@ def get_default_config(info_path: str = None) -> dict:
         
         'crossover_rate': 0.99,
         'elite_percentage': 0.2,
+
+        # Selection strategy. Fitness-only mode preserves the historical scalar
+        # behavior; Pareto mode ranks quality/cost tradeoffs for reproduction.
+        'selection_strategy': 'pareto',
+        'pareto_objectives': [
+            {'name': 'fitness', 'direction': 'maximize'},
+            {'name': 'evaluation_time_seconds', 'direction': 'minimize'},
+            {'name': 'parameter_count', 'direction': 'minimize'},
+        ],
+        'pareto_tie_breaker': 'crowding_distance',
+        'pareto_fitness_epsilon': 0.0,
         
         # Dataset selection
         'dataset': 'AUDIO',
@@ -76,6 +108,9 @@ def get_default_config(info_path: str = None) -> dict:
         'use_amp': True,
         'amp_dtype': 'float16',
         'validation_frequency_epochs': 2,
+        'fitness_metric': 'f1_score',
+        'fold_selection_metric': 'fitness_metric',
+        'metric_improvement_threshold': None,
 
         # Fold evaluation and data loading performance
         'fold_parallel_workers': 5,
@@ -137,6 +172,17 @@ def get_default_config(info_path: str = None) -> dict:
         'inception_pool_branch_options': [True, False],
         'inception_min_branch_channels': 1,
         'inception_mutation_weight': 0.15,
+
+        # Known architecture templates. Templates are genome-level Conv1D
+        # adaptations, not fixed imported reference models.
+        'architecture_template_seed_fraction': 0.15,
+        'architecture_template_mutation_weight': 0.05,
+        'architecture_template_ids': [
+            'resnet_conv1d_small',
+            'googlenet_inception_conv1d_small',
+        ],
+        'architecture_template_seed_min_random_fraction': 0.50,
+        'architecture_template_max_attempts': 20,
         
         'artifact_dir': info_path,
         'artifacts_dir': info_path,
@@ -176,6 +222,48 @@ def validate_config(config: dict) -> None:
     # Elite percentage
     if not (0 <= config['elite_percentage'] <= 1):
         raise ValueError("elite_percentage must be between 0 and 1")
+
+    fitness_metric = str(config.get('fitness_metric', 'f1_score')).strip().lower()
+    if fitness_metric not in SUPPORTED_METRIC_NAMES:
+        valid_options = ', '.join(sorted(SUPPORTED_METRIC_NAMES))
+        raise ValueError(f"fitness_metric must be one of: {valid_options}")
+
+    fold_selection_metric = str(config.get('fold_selection_metric', 'fitness_metric')).strip().lower()
+    if fold_selection_metric != 'fitness_metric' and fold_selection_metric not in SUPPORTED_METRIC_NAMES:
+        valid_options = ', '.join(sorted(SUPPORTED_METRIC_NAMES | {'fitness_metric'}))
+        raise ValueError(f"fold_selection_metric must be one of: {valid_options}")
+
+    metric_improvement_threshold = config.get('metric_improvement_threshold')
+    if metric_improvement_threshold is not None and float(metric_improvement_threshold) < 0:
+        raise ValueError("metric_improvement_threshold must be non-negative or None")
+
+    # Selection strategy
+    selection_strategy = str(config.get('selection_strategy', 'pareto')).lower()
+    if selection_strategy not in {'fitness', 'pareto'}:
+        raise ValueError("selection_strategy must be one of: 'fitness', 'pareto'")
+
+    supported_objectives = {'fitness', 'evaluation_time_seconds', 'parameter_count'}
+    supported_directions = {'maximize', 'minimize'}
+    pareto_objectives = config.get('pareto_objectives', [])
+    if not isinstance(pareto_objectives, list) or not pareto_objectives:
+        raise ValueError("pareto_objectives must be a non-empty list")
+
+    seen_objectives = set()
+    for objective in pareto_objectives:
+        if not isinstance(objective, dict):
+            raise ValueError("Each Pareto objective must be a dictionary")
+        objective_name = objective.get('name')
+        direction = objective.get('direction')
+        if objective_name not in supported_objectives:
+            raise ValueError(f"Unsupported Pareto objective: {objective_name}")
+        if direction not in supported_directions:
+            raise ValueError("Pareto objective direction must be 'maximize' or 'minimize'")
+        if objective_name in seen_objectives:
+            raise ValueError(f"Duplicate Pareto objective: {objective_name}")
+        seen_objectives.add(objective_name)
+
+    if float(config.get('pareto_fitness_epsilon', 0.0)) < 0:
+        raise ValueError("pareto_fitness_epsilon must be non-negative")
     
     # Architecture constraints
     if config['min_conv_layers'] < 1 or config['max_conv_layers'] < config['min_conv_layers']:
@@ -266,6 +354,37 @@ def validate_config(config: dict) -> None:
     inception_mutation_weight = float(config.get('inception_mutation_weight', 0.0))
     if not (0 <= inception_mutation_weight <= 1):
         raise ValueError("inception_mutation_weight must be between 0 and 1")
+
+    # Known architecture template parameters
+    template_seed_fraction = float(config.get('architecture_template_seed_fraction', 0.0))
+    if not (0 <= template_seed_fraction <= 1):
+        raise ValueError("architecture_template_seed_fraction must be between 0 and 1")
+
+    template_mutation_weight = float(config.get('architecture_template_mutation_weight', 0.0))
+    if not (0 <= template_mutation_weight <= 1):
+        raise ValueError("architecture_template_mutation_weight must be between 0 and 1")
+
+    min_random_fraction = float(config.get('architecture_template_seed_min_random_fraction', 0.0))
+    if not (0 <= min_random_fraction <= 1):
+        raise ValueError("architecture_template_seed_min_random_fraction must be between 0 and 1")
+
+    template_max_attempts = int(config.get('architecture_template_max_attempts', 1))
+    if template_max_attempts < 1:
+        raise ValueError("architecture_template_max_attempts must be at least 1")
+
+    template_ids = config.get('architecture_template_ids', [])
+    if not isinstance(template_ids, list) or not template_ids:
+        raise ValueError("architecture_template_ids must be a non-empty list")
+    if len(template_ids) != len(set(template_ids)):
+        raise ValueError("architecture_template_ids must not contain duplicate template IDs")
+
+    from neuroevolution.genetics.architecture_templates import get_template_registry
+
+    known_template_ids = set(get_template_registry())
+    unknown_template_ids = set(template_ids) - known_template_ids
+    if unknown_template_ids:
+        unknown = ', '.join(sorted(unknown_template_ids))
+        raise ValueError(f"unknown architecture template IDs: {unknown}")
 
 
 # Global constants - exported for convenience

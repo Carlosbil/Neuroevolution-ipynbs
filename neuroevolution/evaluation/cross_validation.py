@@ -16,10 +16,16 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from sklearn.metrics import accuracy_score, confusion_matrix, f1_score, recall_score, roc_auc_score
+from sklearn.metrics import confusion_matrix
 
 from ..config import OPTIMIZERS
-from ..evolution.fitness import load_fold_data as load_fold_data_from_evolution
+from ..evolution.fitness import (
+    compute_classification_metrics,
+    load_fold_data as load_fold_data_from_evolution,
+    metric_value,
+    resolve_metric_improvement_threshold,
+    resolve_metric_name,
+)
 from ..models.architecture_formatting import format_genome_architecture
 from ..models.evolvable_cnn import EvolvableCNN
 
@@ -102,17 +108,19 @@ def evaluate_single_fold(
     optimizer = optimizer_class(model.parameters(), lr=best_genome["learning_rate"])
     criterion = nn.CrossEntropyLoss()
 
-    best_validation_acc = 0.0
+    selection_metric = resolve_metric_name(config, "fold_selection_metric")
+    best_selection_score = float("-inf")
+    best_selection_metrics = None
     best_model_state = None
     best_epoch = 0
 
     patience = config.get("epoch_patience", 10)
     patience_counter = 0
-    last_improvement_acc = 0.0
-    improvement_threshold = config.get("improvement_threshold", 0.01)
+    last_improvement_score = float("-inf")
+    improvement_threshold = resolve_metric_improvement_threshold(config)
 
     print(f"Entrenando por hasta {num_epochs} épocas (patience={patience})...")
-    print("Guardando el MEJOR modelo basado en accuracy de validación")
+    print(f"Guardando el MEJOR modelo basado en {selection_metric} de validación")
 
     for epoch in range(1, num_epochs + 1):
         model.train()
@@ -134,39 +142,50 @@ def evaluate_single_fold(
         avg_loss = running_loss / max(1, batch_count)
 
         model.eval()
-        correct = 0
-        total = 0
+        validation_predictions = []
+        validation_targets = []
+        validation_probs = []
 
         with torch.no_grad():
             for data, target in fold_validation_loader:
                 data, target = data.to(device, non_blocking=True), target.to(device, non_blocking=True)
                 output = model(data)
+                probs = F.softmax(output, dim=1)
                 _, predicted = torch.max(output, 1)
-                total += target.size(0)
-                correct += (predicted == target).sum().item()
 
-        current_validation_acc = 100.0 * correct / max(1, total)
+                validation_predictions.extend(predicted.cpu().numpy())
+                validation_targets.extend(target.cpu().numpy())
+                validation_probs.extend(probs[:, 1].cpu().numpy())
 
-        if current_validation_acc > best_validation_acc:
-            best_validation_acc = current_validation_acc
+        validation_metrics = compute_classification_metrics(
+            validation_targets,
+            validation_predictions,
+            validation_probs,
+        )
+        current_selection_score = metric_value(validation_metrics, selection_metric)
+
+        if current_selection_score > (best_selection_score + improvement_threshold):
+            best_selection_score = current_selection_score
+            best_selection_metrics = validation_metrics
             best_model_state = {k: v.clone() for k, v in model.state_dict().items()}
             best_epoch = epoch
             print(
                 f"   Época {epoch}/{num_epochs}: loss={avg_loss:.4f}, "
-                f"val_acc={current_validation_acc:.2f}% *** NUEVO MEJOR ***"
+                f"val_{selection_metric}={current_selection_score:.2f}% *** NUEVO MEJOR ***"
             )
 
-        improvement = current_validation_acc - last_improvement_acc
+        improvement = current_selection_score - last_improvement_score
         if improvement >= improvement_threshold:
             patience_counter = 0
-            last_improvement_acc = current_validation_acc
+            last_improvement_score = current_selection_score
         else:
             patience_counter += 1
 
         if epoch % 30 == 0 or epoch == 1:
             print(
                 f"   Época {epoch}/{num_epochs}: loss={avg_loss:.4f}, "
-                f"val_acc={current_validation_acc:.2f}% (best={best_validation_acc:.2f}%)"
+                f"val_{selection_metric}={current_selection_score:.2f}% "
+                f"(best={best_selection_score:.2f}%)"
             )
 
         if patience_counter >= patience:
@@ -175,7 +194,10 @@ def evaluate_single_fold(
 
     if best_model_state is not None:
         model.load_state_dict(best_model_state)
-        print(f"\n   ✓ Cargado mejor modelo de época {best_epoch} (val_acc={best_validation_acc:.2f}%)")
+        print(
+            f"\n   ✓ Cargado mejor modelo de época {best_epoch} "
+            f"(val_{selection_metric}={best_selection_score:.2f}%)"
+        )
     else:
         print("\n   ⚠ Usando modelo final (no se encontró mejora)")
 
@@ -201,35 +223,33 @@ def evaluate_single_fold(
     y_pred = np.array(all_predictions)
     y_probs = np.array(all_probs)
 
-    accuracy = accuracy_score(y_true, y_pred) * 100
-    sensitivity = recall_score(y_true, y_pred, pos_label=1, zero_division=0) * 100
-    specificity = recall_score(y_true, y_pred, pos_label=0, zero_division=0) * 100
-    f1 = f1_score(y_true, y_pred, zero_division=0) * 100
-
-    try:
-        auc = roc_auc_score(y_true, y_probs[:, 1]) * 100
-    except Exception:
-        auc = 0.0
-
+    test_metrics = compute_classification_metrics(y_true, y_pred, y_probs)
     cm = confusion_matrix(y_true, y_pred)
+    if best_selection_metrics is None:
+        best_selection_metrics = test_metrics
+        best_selection_score = metric_value(best_selection_metrics, selection_metric)
+    best_validation_acc = metric_value(best_selection_metrics, "accuracy")
 
     print(f"\nResultados Test Fold {fold_num} (mejor época por validación: {best_epoch}):")
-    print(f"   Accuracy:     {accuracy:.2f}%")
-    print(f"   Sensitivity:  {sensitivity:.2f}%")
-    print(f"   Specificity:  {specificity:.2f}%")
-    print(f"   F1-Score:     {f1:.2f}%")
-    print(f"   AUC:          {auc:.2f}%")
+    print(f"   Accuracy:     {test_metrics['accuracy']:.2f}%")
+    print(f"   Sensitivity:  {test_metrics['sensitivity']:.2f}%")
+    print(f"   Specificity:  {test_metrics['specificity']:.2f}%")
+    print(f"   F1-Score:     {test_metrics['f1_score']:.2f}%")
+    print(f"   AUC:          {test_metrics['auc']:.2f}%")
 
     return {
         "fold": fold_num,
-        "accuracy": accuracy,
-        "sensitivity": sensitivity,
-        "specificity": specificity,
-        "f1_score": f1,
-        "auc": auc,
+        "accuracy": test_metrics["accuracy"],
+        "sensitivity": test_metrics["sensitivity"],
+        "specificity": test_metrics["specificity"],
+        "f1_score": test_metrics["f1_score"],
+        "auc": test_metrics["auc"],
         "confusion_matrix": cm,
         "n_samples": len(y_true),
         "best_epoch": best_epoch,
+        "selection_metric": selection_metric,
+        "best_selection_score": float(best_selection_score),
+        "best_selection_metrics": best_selection_metrics,
         "best_train_acc": best_validation_acc,
         "best_validation_acc": best_validation_acc,
         "selection_split": "validation",
@@ -259,6 +279,7 @@ def evaluate_5fold_cross_validation(
     """
     if num_epochs is None:
         num_epochs = config.get("num_epochs", 100)
+    selection_metric = resolve_metric_name(config, "fold_selection_metric")
 
     print("=" * 80)
     print("EVALUACIÓN FINAL 5-FOLD CROSS-VALIDATION")
@@ -266,12 +287,16 @@ def evaluate_5fold_cross_validation(
 
     print("\nIMPORTANTE: validación selecciona el mejor epoch y test se reserva para reporte final:")
     print(f"   - Entrena por {num_epochs} épocas por fold")
-    print("   - Guarda el MEJOR modelo basado en accuracy de validación")
+    print(f"   - Guarda el MEJOR modelo basado en {selection_metric} de validación")
     print(f"   - Aplica early stopping con patience={config.get('epoch_patience', 10)}")
     print("   - Reporta métricas finales usando únicamente el split test")
 
     print("\nArquitectura a evaluar:")
     print(f"   Architecture: {_format_architecture(best_genome)}")
+    if best_genome.get("architecture_template_id"):
+        print(f"   Template: {best_genome.get('architecture_template_id')}")
+        print(f"   Template Family: {best_genome.get('architecture_template_family', 'N/A')}")
+        print(f"   Template Origin: {best_genome.get('architecture_template_origin', 'N/A')}")
     print(f"   Conv1D Layers: {best_genome['num_conv_layers']}")
     print(f"   FC Layers: {best_genome['num_fc_layers']}")
     print(f"   Residual Enabled: {best_genome.get('residual_enabled', False)}")
@@ -393,6 +418,7 @@ def evaluate_5fold_cross_validation(
         "n_folds": len(fold_results),
         "architecture": _format_architecture(best_genome),
         "num_epochs_used": num_epochs,
+        "selection_metric": selection_metric,
         "selection_split": "validation",
         "evaluation_split": "test",
     }
