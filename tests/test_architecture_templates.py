@@ -23,6 +23,19 @@ from neuroevolution.models.genome_validator import (
 from neuroevolution.visualization.reports import _format_architecture as format_report_architecture
 
 
+EXPANDED_DEFAULT_TEMPLATE_IDS = [
+    "lenet_conv1d_tiny",
+    "alexnet_conv1d_small",
+    "vgg_conv1d_small",
+    "resnet_conv1d_small",
+    "resnet_conv1d_medium",
+    "wide_resnet_conv1d_small",
+    "googlenet_inception_conv1d_small",
+    "googlenet_inception_conv1d_medium",
+    "inception_conv1d_wide",
+]
+
+
 def small_config(**overrides):
     config = get_default_config()
     config.update(
@@ -49,10 +62,7 @@ def small_config(**overrides):
             "architecture_template_seed_fraction": 0.0,
             "architecture_template_mutation_weight": 0.0,
             "architecture_template_seed_min_random_fraction": 0.5,
-            "architecture_template_ids": [
-                "resnet_conv1d_small",
-                "googlenet_inception_conv1d_small",
-            ],
+            "architecture_template_ids": list(EXPANDED_DEFAULT_TEMPLATE_IDS),
             "architecture_template_max_attempts": 5,
             "crossover_rate": 1.0,
         }
@@ -91,12 +101,12 @@ def base_genome(**overrides):
 def test_template_registry_filters_configured_ids_and_rejects_unknown_templates():
     registry = get_template_registry()
 
-    assert {
-        "resnet_conv1d_small",
-        "googlenet_inception_conv1d_small",
-    } <= set(registry)
+    assert set(EXPANDED_DEFAULT_TEMPLATE_IDS) <= set(registry)
     assert registry["resnet_conv1d_small"].template_family == "resnet"
     assert registry["googlenet_inception_conv1d_small"].conv_topology == "inception"
+
+    default_config = get_default_config()
+    assert default_config["architecture_template_ids"] == EXPANDED_DEFAULT_TEMPLATE_IDS
 
     config = small_config(architecture_template_ids=["resnet_conv1d_small"])
     configured = get_configured_templates(config)
@@ -106,6 +116,28 @@ def test_template_registry_filters_configured_ids_and_rejects_unknown_templates(
     invalid = small_config(architecture_template_ids=["missing_template"])
     with pytest.raises(ValueError, match="unknown architecture template"):
         validate_config(invalid)
+
+
+def test_all_default_templates_build_valid_models():
+    config = small_config()
+    registry = get_template_registry()
+
+    observed_topologies = set()
+    for template_id in EXPANDED_DEFAULT_TEMPLATE_IDS:
+        template = registry[template_id]
+        genome = create_template_genome(template_id, config, origin="initial_seed")
+        observed_topologies.add(genome["conv_topology"])
+
+        assert genome["architecture_template_id"] == template_id
+        assert genome["architecture_template_family"] == template.template_family
+        assert is_genome_valid(genome, config)
+        assert genome["innovation_genes"]
+
+        model = EvolvableCNN(copy.deepcopy(genome), config)
+        model.eval()
+        assert model(torch.randn(2, 1, 64)).shape == (2, 2)
+
+    assert observed_topologies == {"sequential", "residual", "inception"}
 
 
 def test_template_factory_returns_valid_normalized_genome_with_provenance():
