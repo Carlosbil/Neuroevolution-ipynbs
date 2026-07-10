@@ -53,7 +53,13 @@ def assign_species(population: List[dict], species_dict: Dict, config: dict) -> 
         Updated species dictionary
     """
     threshold = config.get('speciation_threshold', 0.45)
-    new_species = {}
+    new_species = {
+        species_id: {
+            'representative': specie['representative'],
+            'members': []
+        }
+        for species_id, specie in species_dict.items()
+    }
     
     for genome in population:
         # Ensure genome has innovation genes
@@ -63,15 +69,10 @@ def assign_species(population: List[dict], species_dict: Dict, config: dict) -> 
         
         assigned = False
         
-        # Try to assign to existing species
-        for species_id, specie in species_dict.items():
+        # Try to assign to an existing or newly created species in this pass
+        for species_id, specie in new_species.items():
             distance = calculate_compatibility_distance(genome, specie['representative'], config)
             if distance <= threshold:
-                if species_id not in new_species:
-                    new_species[species_id] = {
-                        'representative': specie['representative'],
-                        'members': []
-                    }
                 new_species[species_id]['members'].append(genome)
                 genome['species_id'] = species_id
                 assigned = True
@@ -86,7 +87,11 @@ def assign_species(population: List[dict], species_dict: Dict, config: dict) -> 
             }
             genome['species_id'] = species_id
     
-    return new_species
+    return {
+        species_id: specie
+        for species_id, specie in new_species.items()
+        if specie['members']
+    }
 
 
 def update_species_representatives(species_dict: Dict) -> None:

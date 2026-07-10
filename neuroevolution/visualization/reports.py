@@ -90,7 +90,7 @@ def display_best_architecture(
     print(f"{'Parameter':<25} {'Value':<30} {'Description':<25}")
     print(f"{'='*80}")
     print(f"{'ID':<25} {best_genome['id']:<30} {'Unique identifier':<25}")
-    print(f"{'Fitness':<25} {best_genome['fitness']:.2f}%{'':<25} {'Accuracy achieved':<25}")
+    print(f"{'Fitness':<25} {best_genome['fitness']:.2f}%{'':<25} {'Validation F1-score':<25}")
     print(f"{'Architecture':<25} {'Conv1D + FC':<30} {'1D Convolutional':<25}")
     print(f"{'Conv Layers':<25} {best_genome['num_conv_layers']:<30} {'Conv1D layers':<25}")
     print(f"{'FC Layers':<25} {best_genome['num_fc_layers']:<30} {'FC layers':<25}")
@@ -169,12 +169,12 @@ def print_checkpoint_info(neuroevolution, device: torch.device) -> None:
             print(f"    Optimizador: {checkpoint_data['genome']['optimizer']}")
             print(f"    Learning Rate: {checkpoint_data['genome']['learning_rate']}")
 
-            print("\n  Este checkpoint se usará como punto de partida para el 5-fold CV")
-            print("  (Transfer learning desde el modelo pre-entrenado)")
+            print("\n  Este checkpoint fue seleccionado por validación durante la evolución")
+            print("  Para métricas finales, reentrenar por fold y evaluar solo en test")
         else:
             print("  ✗ Archivo no encontrado")
     else:
         print("\n✗ No hay checkpoint disponible")
-        print("  El 5-fold CV entrenará desde cero")
+        print("  La evaluación final de 5 folds entrenará desde cero")
 
     print("\n" + "=" * 80)

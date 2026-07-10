@@ -45,7 +45,14 @@ from .genetics.innovation import (
 
 # Evolution engine
 from .evolution.engine import HybridNeuroevolution
-from .evolution.fitness import evaluate_fitness, train_fold_in_thread, load_fold_data
+from .evolution.fitness import (
+    FoldLoaders,
+    checkpoint_selection_score,
+    evaluate_fitness,
+    load_fold_data,
+    load_fold_loaders,
+    train_fold_in_thread,
+)
 
 # Evaluation and artifacts
 from .evaluation.metrics import calculate_metrics, aggregate_fold_metrics
@@ -108,9 +115,12 @@ __all__ = [
     "append_structural_event",
     # Evolution
     "HybridNeuroevolution",
+    "FoldLoaders",
+    "checkpoint_selection_score",
     "evaluate_fitness",
     "train_fold_in_thread",
     "load_fold_data",
+    "load_fold_loaders",
     # Evaluation
     "calculate_metrics",
     "aggregate_fold_metrics",

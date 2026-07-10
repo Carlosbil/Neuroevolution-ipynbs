@@ -76,6 +76,8 @@ def get_default_config(info_path: str = None) -> dict:
         'use_amp': True,
         'amp_dtype': 'float16',
         'validation_frequency_epochs': 2,
+        'fitness_metric': 'f1_score',
+        'checkpoint_metric': 'f1_score',
 
         # Fold evaluation and data loading performance
         'fold_parallel_workers': 5,
@@ -120,12 +122,14 @@ def get_default_config(info_path: str = None) -> dict:
         'artifact_dir': info_path,
         'artifacts_dir': info_path,
         
-        # Audio dataset configuration (OS-independent paths)
-        'dataset_id': '40_1e5_N',
-        'fold_id': '40_1e5_N',
+        # Article-safe default: real-only 60/20/20 fold files.
+        # Synthetic fold variants are exploratory unless a subject manifest proves
+        # that validation/test subjects never contribute synthetic training data.
+        'dataset_id': 'real_N',
+        'fold_id': 'N',
         'num_folds': 5,
         'data_path': os.path.join('data', 'sets', 'folds_5'),
-        'fold_files_subdirectory': 'files_real_40_1e5_N',
+        'fold_files_subdirectory': 'files_real_N',
         'normalization': {'mean': (0.0,), 'std': (1.0,)}
     }
 

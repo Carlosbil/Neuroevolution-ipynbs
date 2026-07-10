@@ -30,7 +30,7 @@ from .fitness import evaluate_fitness
 
 
 class HybridNeuroevolution:
-    """Main class that implements hybrid neuroevolution with 5-fold CV and adaptive mutation."""
+    """Main class that implements hybrid neuroevolution with 5-fold validation fitness and adaptive mutation."""
 
     def __init__(self, config: dict, device: torch.device):
         self.config = config
@@ -339,7 +339,11 @@ class HybridNeuroevolution:
             'genome': genome,
             'generation': self.generation,
             'fitness': genome['fitness'],
-            'config': self.config
+            'config': self.config,
+            'selection_split': 'validation',
+            'fitness_metric': self.config.get('fitness_metric', 'f1_score'),
+            'checkpoint_metric': self.config.get('checkpoint_metric', self.config.get('fitness_metric', 'f1_score')),
+            'test_evaluated': False,
         }
 
         try:
@@ -670,7 +674,7 @@ class HybridNeuroevolution:
         
         if best.get('metrics'):
             m = best['metrics']
-            print(f"\n📊 PERFORMANCE METRICS (5-Fold Cross-Validation):")
+            print(f"\n📊 PERFORMANCE METRICS (5-fold validation fitness):")
             print(f"   {'─'*60}")
             print(f"   {'Metric':<15} {'Mean':<15} {'Std Dev':<15}")
             print(f"   {'─'*60}")

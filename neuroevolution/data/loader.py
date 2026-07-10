@@ -1,5 +1,5 @@
 """
-Dataset loading and verification for 5-fold cross-validation.
+Dataset loading and verification for the 5-fold train/validation/test protocol.
 """
 
 import os

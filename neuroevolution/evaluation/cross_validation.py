@@ -1,5 +1,5 @@
 """
-Final 5-fold cross-validation utilities for best genome evaluation.
+Final 5-fold train/validation/test evaluation utilities for the best genome.
 
 This module extracts notebook evaluation logic so notebooks orchestrate calls
 without embedding training/evaluation implementations inline.
@@ -19,8 +19,29 @@ import torch.nn.functional as F
 from sklearn.metrics import accuracy_score, confusion_matrix, f1_score, recall_score, roc_auc_score
 
 from ..config import OPTIMIZERS
-from ..evolution.fitness import load_fold_data as load_fold_data_from_evolution
+from ..evolution.fitness import FoldLoaders, load_fold_loaders as load_fold_loaders_from_evolution
 from ..models.evolvable_cnn import EvolvableCNN
+
+
+def load_fold_loaders(
+    config: dict,
+    fold_number: int,
+    device: Optional[torch.device] = None
+) -> FoldLoaders:
+    """
+    Load train/validation/test dataloaders for a specific fold.
+
+    Args:
+        config: System configuration dictionary.
+        fold_number: Fold number (1-5).
+        device: PyTorch device. If not provided, auto-detected.
+
+    Returns:
+        FoldLoaders with train, validation, and test loaders.
+    """
+    if device is None:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    return load_fold_loaders_from_evolution(fold_number, config, device)
 
 
 def load_fold_data(
@@ -29,147 +50,27 @@ def load_fold_data(
     device: Optional[torch.device] = None
 ) -> Tuple[torch.utils.data.DataLoader, torch.utils.data.DataLoader]:
     """
-    Load train/eval dataloaders for a specific fold.
+    Compatibility wrapper returning train and held-out test loaders.
 
-    Args:
-        config: System configuration dictionary.
-        fold_number: Fold number (1-5).
-        device: PyTorch device. If not provided, auto-detected.
-
-    Returns:
-        Tuple of (fold_train_loader, fold_test_loader).
+    New code should use load_fold_loaders() to keep validation explicit.
     """
-    if device is None:
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    return load_fold_data_from_evolution(fold_number, config, device)
+    loaders = load_fold_loaders(config, fold_number, device)
+    return loaders.train, loaders.test
 
 
-def evaluate_single_fold(
-    best_genome: dict,
-    config: dict,
-    fold_train_loader: torch.utils.data.DataLoader,
-    fold_test_loader: torch.utils.data.DataLoader,
-    fold_num: int,
-    device: torch.device,
-    num_epochs: int = 100,
-    use_pretrained: bool = False,
-    pretrained_model: Optional[nn.Module] = None
+def _evaluate_loader_metrics(
+    model: nn.Module,
+    loader: torch.utils.data.DataLoader,
+    device: torch.device
 ) -> Dict[str, Any]:
-    """
-    Train and evaluate one fold using the same methodology as evolution.
-
-    Args:
-        best_genome: Best architecture genome.
-        config: System configuration dictionary.
-        fold_train_loader: Fold training dataloader.
-        fold_test_loader: Fold test dataloader (val+test combined).
-        fold_num: Fold number (1-5).
-        device: Device to train/evaluate on.
-        num_epochs: Max epochs for this fold.
-        use_pretrained: Whether to initialize from pretrained checkpoint.
-        pretrained_model: Optional pretrained model instance.
-
-    Returns:
-        Dictionary with fold metrics and metadata.
-    """
-    print(f"\n{'='*70}")
-    print(f"FOLD {fold_num}/5")
-    print(f"{'='*70}")
-
-    model = EvolvableCNN(best_genome, config).to(device)
-
-    if use_pretrained and pretrained_model is not None:
-        print("   Inicializando desde modelo pre-entrenado...")
-        try:
-            model.load_state_dict(pretrained_model.state_dict())
-            print("   ✓ Pesos pre-entrenados cargados exitosamente")
-        except Exception as e:
-            print(f"   ✗ Error cargando pesos pre-entrenados: {e}")
-            print("   Continuando con pesos aleatorios...")
-
-    optimizer_class = OPTIMIZERS[best_genome["optimizer"]]
-    optimizer = optimizer_class(model.parameters(), lr=best_genome["learning_rate"])
-    criterion = nn.CrossEntropyLoss()
-
-    best_acc = 0.0
-    best_model_state = None
-    best_epoch = 0
-
-    patience = config.get("epoch_patience", 10)
-    patience_counter = 0
-    last_improvement_acc = 0.0
-    improvement_threshold = config.get("improvement_threshold", 0.01)
-
-    print(f"Entrenando por hasta {num_epochs} épocas (patience={patience})...")
-    print("Guardando el MEJOR modelo basado en eval accuracy (como en evolución)")
-
-    for epoch in range(1, num_epochs + 1):
-        model.train()
-        running_loss = 0.0
-        batch_count = 0
-
-        for data, target in fold_train_loader:
-            data, target = data.to(device, non_blocking=True), target.to(device, non_blocking=True)
-
-            optimizer.zero_grad()
-            output = model(data)
-            loss = criterion(output, target)
-            loss.backward()
-            optimizer.step()
-
-            running_loss += loss.item()
-            batch_count += 1
-
-        avg_loss = running_loss / max(1, batch_count)
-
-        model.eval()
-        correct = 0
-        total = 0
-
-        with torch.no_grad():
-            for data, target in fold_test_loader:
-                data, target = data.to(device, non_blocking=True), target.to(device, non_blocking=True)
-                output = model(data)
-                _, predicted = torch.max(output, 1)
-                total += target.size(0)
-                correct += (predicted == target).sum().item()
-
-        current_acc = 100.0 * correct / max(1, total)
-
-        if current_acc > best_acc:
-            best_acc = current_acc
-            best_model_state = {k: v.clone() for k, v in model.state_dict().items()}
-            best_epoch = epoch
-            print(f"   Época {epoch}/{num_epochs}: loss={avg_loss:.4f}, acc={current_acc:.2f}% *** NUEVO MEJOR ***")
-
-        improvement = current_acc - last_improvement_acc
-        if improvement >= improvement_threshold:
-            patience_counter = 0
-            last_improvement_acc = current_acc
-        else:
-            patience_counter += 1
-
-        if epoch % 30 == 0 or epoch == 1:
-            print(f"   Época {epoch}/{num_epochs}: loss={avg_loss:.4f}, acc={current_acc:.2f}% (best={best_acc:.2f}%)")
-
-        if patience_counter >= patience:
-            print(f"   Early stopping en época {epoch} (sin mejora por {patience} épocas)")
-            break
-
-    if best_model_state is not None:
-        model.load_state_dict(best_model_state)
-        print(f"\n   ✓ Cargado mejor modelo de época {best_epoch} (acc={best_acc:.2f}%)")
-    else:
-        print("\n   ⚠ Usando modelo final (no se encontró mejora)")
-
-    print("Evaluando con el mejor modelo...")
+    """Evaluate a model on one loader and return classification metrics."""
     model.eval()
     all_predictions = []
     all_targets = []
     all_probs = []
 
     with torch.no_grad():
-        for data, target in fold_test_loader:
+        for data, target in loader:
             data, target = data.to(device, non_blocking=True), target.to(device, non_blocking=True)
             output = model(data)
 
@@ -196,15 +97,7 @@ def evaluate_single_fold(
 
     cm = confusion_matrix(y_true, y_pred)
 
-    print(f"\nResultados Fold {fold_num} (usando mejor modelo de época {best_epoch}):")
-    print(f"   Accuracy:     {accuracy:.2f}%")
-    print(f"   Sensitivity:  {sensitivity:.2f}%")
-    print(f"   Specificity:  {specificity:.2f}%")
-    print(f"   F1-Score:     {f1:.2f}%")
-    print(f"   AUC:          {auc:.2f}%")
-
     return {
-        "fold": fold_num,
         "accuracy": accuracy,
         "sensitivity": sensitivity,
         "specificity": specificity,
@@ -212,8 +105,140 @@ def evaluate_single_fold(
         "auc": auc,
         "confusion_matrix": cm,
         "n_samples": len(y_true),
+    }
+
+
+def evaluate_single_fold(
+    best_genome: dict,
+    config: dict,
+    fold_train_loader: torch.utils.data.DataLoader,
+    fold_validation_loader: torch.utils.data.DataLoader,
+    fold_test_loader: torch.utils.data.DataLoader,
+    fold_num: int,
+    device: torch.device,
+    num_epochs: int = 100
+) -> Dict[str, Any]:
+    """
+    Train one fold with validation selection and evaluate once on held-out test.
+
+    Args:
+        best_genome: Best architecture genome.
+        config: System configuration dictionary.
+        fold_train_loader: Fold training dataloader.
+        fold_validation_loader: Fold validation dataloader used for selection.
+        fold_test_loader: Fold held-out test dataloader used for final metrics.
+        fold_num: Fold number (1-5).
+        device: Device to train/evaluate on.
+        num_epochs: Max epochs for this fold.
+
+    Returns:
+        Dictionary with fold metrics and metadata.
+    """
+    print(f"\n{'='*70}")
+    print(f"FOLD {fold_num}/5")
+    print(f"{'='*70}")
+
+    model = EvolvableCNN(best_genome, config).to(device)
+
+    optimizer_class = OPTIMIZERS[best_genome["optimizer"]]
+    optimizer = optimizer_class(model.parameters(), lr=best_genome["learning_rate"])
+    criterion = nn.CrossEntropyLoss()
+
+    checkpoint_metric = config.get("checkpoint_metric", config.get("fitness_metric", "f1_score"))
+    best_validation_score = -float("inf")
+    best_model_state = None
+    best_epoch = 0
+
+    patience = config.get("epoch_patience", 10)
+    patience_counter = 0
+    last_improvement_score = 0.0
+    improvement_threshold = config.get("improvement_threshold", 0.01)
+
+    print(f"Entrenando por hasta {num_epochs} épocas (patience={patience})...")
+    print(f"Guardando el MEJOR modelo basado en validation {checkpoint_metric}")
+
+    for epoch in range(1, num_epochs + 1):
+        model.train()
+        running_loss = 0.0
+        batch_count = 0
+
+        for data, target in fold_train_loader:
+            data, target = data.to(device, non_blocking=True), target.to(device, non_blocking=True)
+
+            optimizer.zero_grad()
+            output = model(data)
+            loss = criterion(output, target)
+            loss.backward()
+            optimizer.step()
+
+            running_loss += loss.item()
+            batch_count += 1
+
+        avg_loss = running_loss / max(1, batch_count)
+
+        validation_metrics = _evaluate_loader_metrics(model, fold_validation_loader, device)
+        current_score = validation_metrics.get(checkpoint_metric, validation_metrics["f1_score"])
+
+        if current_score > best_validation_score:
+            best_validation_score = current_score
+            best_model_state = {k: v.clone() for k, v in model.state_dict().items()}
+            best_epoch = epoch
+            print(
+                f"   Época {epoch}/{num_epochs}: loss={avg_loss:.4f}, "
+                f"val_{checkpoint_metric}={current_score:.2f}% *** NUEVO MEJOR ***"
+            )
+
+        improvement = current_score - last_improvement_score
+        if improvement >= improvement_threshold:
+            patience_counter = 0
+            last_improvement_score = current_score
+        else:
+            patience_counter += 1
+
+        if epoch % 30 == 0 or epoch == 1:
+            print(
+                f"   Época {epoch}/{num_epochs}: loss={avg_loss:.4f}, "
+                f"val_{checkpoint_metric}={current_score:.2f}% "
+                f"(best={best_validation_score:.2f}%)"
+            )
+
+        if patience_counter >= patience:
+            print(f"   Early stopping en época {epoch} (sin mejora por {patience} épocas)")
+            break
+
+    if best_model_state is not None:
+        model.load_state_dict(best_model_state)
+        print(
+            f"\n   ✓ Cargado mejor modelo de época {best_epoch} "
+            f"(validation {checkpoint_metric}={best_validation_score:.2f}%)"
+        )
+    else:
+        print("\n   ⚠ Usando modelo final (no se encontró mejora)")
+
+    print("Evaluando con el mejor modelo sobre test held-out...")
+    test_metrics = _evaluate_loader_metrics(model, fold_test_loader, device)
+
+    print(f"\nResultados Fold {fold_num} (usando mejor modelo de época {best_epoch}):")
+    print(f"   Accuracy:     {test_metrics['accuracy']:.2f}%")
+    print(f"   Sensitivity:  {test_metrics['sensitivity']:.2f}%")
+    print(f"   Specificity:  {test_metrics['specificity']:.2f}%")
+    print(f"   F1-Score:     {test_metrics['f1_score']:.2f}%")
+    print(f"   AUC:          {test_metrics['auc']:.2f}%")
+
+    return {
+        "fold": fold_num,
+        "accuracy": test_metrics["accuracy"],
+        "sensitivity": test_metrics["sensitivity"],
+        "specificity": test_metrics["specificity"],
+        "f1_score": test_metrics["f1_score"],
+        "auc": test_metrics["auc"],
+        "confusion_matrix": test_metrics["confusion_matrix"],
+        "n_samples": test_metrics["n_samples"],
         "best_epoch": best_epoch,
-        "best_train_acc": best_acc,
+        "selection_split": "validation",
+        "evaluation_split": "test",
+        "checkpoint_metric": checkpoint_metric,
+        "best_validation_score": best_validation_score,
     }
 
 
@@ -225,7 +250,7 @@ def evaluate_5fold_cross_validation(
     neuroevolution_instance=None
 ) -> Optional[Dict[str, Any]]:
     """
-    Evaluate the best architecture using 5-fold cross-validation.
+    Evaluate the best architecture using five train/validation/test partitions.
 
     Args:
         best_genome: Best architecture genome.
@@ -235,20 +260,21 @@ def evaluate_5fold_cross_validation(
         neuroevolution_instance: Optional HybridNeuroevolution instance to load checkpoint.
 
     Returns:
-        Aggregated 5-fold results dictionary or None if all folds fail.
+        Aggregated 5-fold held-out test results dictionary or None if all folds fail.
     """
     if num_epochs is None:
         num_epochs = config.get("num_epochs", 100)
 
     print("=" * 80)
-    print("EVALUACIÓN 5-FOLD CROSS-VALIDATION (METODOLOGÍA CONSISTENTE)")
+    print("EVALUACIÓN 5-FOLD TRAIN/VALIDATION/TEST (METODOLOGÍA CONSISTENTE)")
     print("=" * 80)
 
     print("\n⚠️  IMPORTANTE: Esta evaluación usa la MISMA metodología que durante la evolución:")
     print(f"   - Entrena por {num_epochs} épocas (igual que en evolución)")
-    print("   - Guarda el MEJOR modelo basado en accuracy de validación")
+    checkpoint_metric = config.get("checkpoint_metric", config.get("fitness_metric", "f1_score"))
+    print(f"   - Guarda el MEJOR modelo basado en {checkpoint_metric} de validación")
     print(f"   - Aplica early stopping con patience={config.get('epoch_patience', 10)}")
-    print("   - Evalúa métricas finales con el MEJOR modelo, no el final")
+    print("   - Evalúa métricas finales sobre test held-out con el MEJOR modelo de validación")
 
     print("\nArquitectura a evaluar:")
     print(f"   Conv1D Layers: {best_genome['num_conv_layers']}")
@@ -257,19 +283,9 @@ def evaluate_5fold_cross_validation(
     print(f"   Learning Rate: {best_genome['learning_rate']}")
     print(f"   Épocas por fold: {num_epochs}")
 
-    pretrained_model = None
-    use_pretrained = False
-
     if neuroevolution_instance is not None:
-        print("\nIntentando cargar checkpoint del mejor modelo...")
-        _, pretrained_model = neuroevolution_instance.load_best_checkpoint()
-
-        if pretrained_model is not None:
-            use_pretrained = True
-            print("✓ Checkpoint cargado exitosamente")
-            print("  Los modelos de cada fold se inicializarán con estos pesos pre-entrenados")
-        else:
-            print("✗ No se pudo cargar checkpoint, se entrenarán desde cero")
+        print("\nLa evaluación final usa la arquitectura seleccionada y entrena desde cero por fold.")
+        print("Los pesos del checkpoint evolutivo no se usan para métricas finales de test.")
     else:
         print("\nNo se proporcionó instancia de neuroevolution, entrenando desde cero")
 
@@ -279,20 +295,20 @@ def evaluate_5fold_cross_validation(
         print(f"\n\nCargando datos del Fold {fold_num}...")
 
         try:
-            fold_train_loader, fold_test_loader = load_fold_data(config, fold_num, device=device)
-            print(f"   Train batches: {len(fold_train_loader)}")
-            print(f"   Test batches: {len(fold_test_loader)}")
+            fold_loaders = load_fold_loaders(config, fold_num, device=device)
+            print(f"   Train batches: {len(fold_loaders.train)}")
+            print(f"   Validation batches: {len(fold_loaders.validation)}")
+            print(f"   Test batches: {len(fold_loaders.test)}")
 
             fold_result = evaluate_single_fold(
                 best_genome,
                 config,
-                fold_train_loader,
-                fold_test_loader,
+                fold_loaders.train,
+                fold_loaders.validation,
+                fold_loaders.test,
                 fold_num,
                 device=device,
                 num_epochs=num_epochs,
-                use_pretrained=use_pretrained,
-                pretrained_model=pretrained_model,
             )
             fold_results.append(fold_result)
 
@@ -305,7 +321,7 @@ def evaluate_5fold_cross_validation(
             continue
 
     print("\n\n" + "=" * 80)
-    print("RESULTADOS AGREGADOS (5-FOLD CROSS-VALIDATION)")
+    print("RESULTADOS AGREGADOS (5-FOLD TEST HELD-OUT)")
     print("=" * 80)
 
     if not fold_results:
