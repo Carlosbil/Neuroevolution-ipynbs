@@ -45,75 +45,92 @@ def get_default_config(info_path: str = None) -> dict:
     
     return {
         # Genetic algorithm parameters
-        'population_size': 20,
-        'max_generations': 100,
-        'fitness_threshold': 98.0,
+        # Tuned for the available H100 NVL MIG 3g.47gb CUDA partition.
+        # Each fold is independent, so all five can train concurrently on CUDA.
+        # Search-quality preset: more independent candidates and a long enough
+        # horizon for speciation and incremental growth to produce useful variants.
+        'population_size': 64,
+        'max_generations': 250,
+        'fitness_threshold': 100.0,
         
         # Adaptive mutation parameters
-        'base_mutation_rate': 0.25,
-        'mutation_rate_min': 0.10,
-        'mutation_rate_max': 0.80,
-        'current_mutation_rate': 0.25,
-        'structural_mutation_generation_factor': 0.5,
+        'base_mutation_rate': 0.20,
+        'mutation_rate_min': 0.05,
+        'mutation_rate_max': 0.50,
+        'current_mutation_rate': 0.20,
+        # Prevent late generations from making destructive, very large depth jumps.
+        'structural_mutation_generation_factor': 0.03,
         
-        'crossover_rate': 0.99,
-        'elite_percentage': 0.2,
+        'crossover_rate': 0.90,
+        'elite_percentage': 0.125,
         
         # Dataset selection
         'dataset': 'AUDIO',
         
         # Dataset parameters for audio
         'num_channels': 1,
-        'sequence_length': 240000,
+        # The real_N fold arrays are shaped (n_samples, 11520).
+        # This must match the input data because it determines the first FC layer.
+        'sequence_length': 11520,
         'num_classes': 2,
         'batch_size': 64,
         'test_split': 0.2,
         
         # Training parameters
         'num_epochs': 100,
-        'learning_rate': 0.00001,
+        'learning_rate': 0.0001,
         'early_stopping_patience': 100000,
         'use_amp': True,
         'amp_dtype': 'float16',
-        'validation_frequency_epochs': 2,
+        'validation_frequency_epochs': 1,
         'fitness_metric': 'f1_score',
         'checkpoint_metric': 'f1_score',
 
         # Fold evaluation and data loading performance
         'fold_parallel_workers': 5,
         'fold_cache_mode': 'ram',  # Options: 'none', 'ram', 'memmap'
-        'dataloader_num_workers': None,  # Auto when None
+        'dataloader_num_workers': 4,
         'dataloader_persistent_workers': True,
         'dataloader_prefetch_factor': 2,
         'dataloader_pin_memory': True,
         
         # Epoch-level early stopping
-        'epoch_patience': 10,
+        'epoch_patience': 18,
         'improvement_threshold': 0.01,
         
         # Generation-level early stopping
-        'early_stopping_generations': 20,
+        'early_stopping_generations': 60,
         'min_improvement_threshold': 0.01,
         
         # Architecture range for 1D Conv
         'min_conv_layers': 1,
-        'max_conv_layers': 30,
+        'max_conv_layers': 11,
         'min_fc_layers': 1,
-        'max_fc_layers': 10,
-        'min_filters': 1,
+        'max_fc_layers': 4,
+        'min_filters': 8,
         'max_filters': 256,
         'min_fc_nodes': 64,
-        'max_fc_nodes': 1024,
+        'max_fc_nodes': 768,
+
+        # Search shallow models first, then unlock depth progressively. This keeps
+        # early evaluations inexpensive while allowing the full safe search space.
+        'initial_max_conv_layers': 3,
+        'initial_max_fc_layers': 1,
+        'complexity_step_generations': 8,
+        'incremental_growth_probability': 0.7,
+        'speciation_threshold': 0.45,
+        'species_elite_min': 1,
+        'species_survival_rate': 0.5,
         
         # Mutation parameters - Kernel sizes for 1D Conv
-        'kernel_size_options': [1, 3, 5, 7, 9, 11, 13, 15],
+        'kernel_size_options': [3, 5, 7, 9, 11, 13, 15],
         
         # Mutation parameters - Dropout range
-        'min_dropout': 0.2,
-        'max_dropout': 0.6,
+        'min_dropout': 0.1,
+        'max_dropout': 0.5,
         
         # Mutation parameters - Learning rate options
-        'learning_rate_options': [0.001, 0.0005, 0.0001, 0.00005, 0.00001, 0.01, 0.1, 0.00001],
+        'learning_rate_options': [0.001, 0.0005, 0.0002, 0.0001, 0.00005, 0.00001],
         
         # Mutation parameters - Normalization type weights
         'normalization_batch_weight': 0.8,

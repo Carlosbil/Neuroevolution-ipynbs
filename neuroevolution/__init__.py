@@ -58,6 +58,11 @@ from .evolution.fitness import (
 from .evaluation.metrics import calculate_metrics, aggregate_fold_metrics
 from .evaluation.artifacts import ArtifactManager
 from .evaluation.cross_validation import evaluate_5fold_cross_validation, evaluate_single_fold
+from .evaluation.reporting import (
+    build_held_out_results_rows,
+    format_held_out_results_markdown,
+    plot_fold_confusion_matrices,
+)
 
 # Visualization
 from .visualization.plots import (
@@ -127,6 +132,9 @@ __all__ = [
     "ArtifactManager",
     "evaluate_single_fold",
     "evaluate_5fold_cross_validation",
+    "build_held_out_results_rows",
+    "format_held_out_results_markdown",
+    "plot_fold_confusion_matrices",
     # Visualization
     "plot_fitness_evolution",
     "show_evolution_statistics",

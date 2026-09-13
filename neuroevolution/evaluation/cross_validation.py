@@ -23,6 +23,21 @@ from ..evolution.fitness import FoldLoaders, load_fold_loaders as load_fold_load
 from ..models.evolvable_cnn import EvolvableCNN
 
 
+def _to_json_compatible(value: Any) -> Any:
+    """Recursively convert NumPy and tensor values to JSON-native types."""
+    if isinstance(value, dict):
+        return {str(key): _to_json_compatible(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_to_json_compatible(item) for item in value]
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, torch.Tensor):
+        return value.detach().cpu().tolist()
+    return value
+
+
 def load_fold_loaders(
     config: dict,
     fold_number: int,
@@ -378,6 +393,8 @@ def evaluate_5fold_cross_validation(
         "n_folds": len(fold_results),
         "architecture": f"{best_genome['num_conv_layers']}Conv1D+{best_genome['num_fc_layers']}FC",
         "num_epochs_used": num_epochs,
+        "selection_split": "validation",
+        "evaluation_split": "test",
     }
 
     print("\n" + "=" * 80)
@@ -416,11 +433,14 @@ def evaluate_5fold_cross_validation(
     print(f"   {markdown_row}")
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    results_file = f"5fold_cv_results_{timestamp}.json"
+    artifacts_dir = config.get("artifacts_dir", "artifacts/test_audio")
+    os.makedirs(artifacts_dir, exist_ok=True)
+    results_file = os.path.join(artifacts_dir, f"5fold_cv_results_{timestamp}.json")
+    results["results_path"] = results_file
 
     try:
         with open(results_file, "w", encoding="utf-8") as f:
-            json.dump(results, f, indent=2, default=str)
+            json.dump(_to_json_compatible(results), f, indent=2)
         print(f"\n✓ Resultados guardados en: {results_file}")
     except Exception as e:
         print(f"\n✗ Error guardando resultados: {e}")
