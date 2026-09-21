@@ -10,6 +10,17 @@ from neuroevolution.models.genome_validator import is_genome_valid, validate_and
 from neuroevolution.genetics.innovation import build_innovation_genes, append_structural_event
 
 
+def _copy_topology_fields(child: dict, source: dict) -> None:
+    """Copies a complete mutually-exclusive Conv1D topology package."""
+    child['conv_topology'] = source.get('conv_topology', 'sequential')
+    child['residual_enabled'] = source.get('residual_enabled', False)
+    child['residual_block_size'] = source.get('residual_block_size', 2)
+    child['residual_projection'] = source.get('residual_projection', 'auto')
+    child['inception_enabled'] = source.get('inception_enabled', False)
+    child['inception_reduction_ratio'] = source.get('inception_reduction_ratio', 0.5)
+    child['inception_pool_branch'] = source.get('inception_pool_branch', True)
+
+
 def _innovation_aligned_child(dominant_parent: dict, other_parent: dict, config: dict) -> dict:
     """
     Builds one child by aligning homologous genes using innovation_id.
@@ -24,6 +35,8 @@ def _innovation_aligned_child(dominant_parent: dict, other_parent: dict, config:
     """
     dominant = copy.deepcopy(dominant_parent)
     other = copy.deepcopy(other_parent)
+    dominant = validate_and_fix_genome(dominant, config)
+    other = validate_and_fix_genome(other, config)
 
     if 'innovation_genes' not in dominant:
         dominant['innovation_genes'] = build_innovation_genes(dominant)
@@ -57,7 +70,10 @@ def _innovation_aligned_child(dominant_parent: dict, other_parent: dict, config:
         parts = gene['gene_key'].split('_')
         if len(parts) < 3:
             continue
-        idx = int(parts[-1])
+        try:
+            idx = int(parts[-1])
+        except ValueError:
+            continue
         key_prefix = '_'.join(parts[:2])
 
         if key_prefix == 'conv_filter':
@@ -77,6 +93,9 @@ def _innovation_aligned_child(dominant_parent: dict, other_parent: dict, config:
         child['kernel_sizes'] = conv_kernels
     if fc_nodes:
         child['fc_nodes'] = fc_nodes
+
+    topology_source = dominant if random.random() < 0.5 else other
+    _copy_topology_fields(child, topology_source)
 
     child['num_conv_layers'] = min(len(child.get('filters', [])), len(child.get('kernel_sizes', [])))
     child['num_fc_layers'] = len(child.get('fc_nodes', []))
@@ -100,11 +119,12 @@ def _innovation_aligned_child(dominant_parent: dict, other_parent: dict, config:
         child,
         'innovation_crossover',
         {
-            'dominant_parent': dominant_parent.get('id', 'unknown'),
-            'other_parent': other_parent.get('id', 'unknown'),
-            'num_merged_genes': len(merged_genes)
-        }
-    )
+                'dominant_parent': dominant_parent.get('id', 'unknown'),
+                'other_parent': other_parent.get('id', 'unknown'),
+                'num_merged_genes': len(merged_genes),
+                'topology_source_parent': topology_source.get('id', 'unknown')
+            }
+        )
     return child
 
 
@@ -128,6 +148,8 @@ def crossover_genomes(parent1: dict, parent2: dict, config: dict) -> Tuple[dict,
         child2['id'] = str(uuid.uuid4())[:8]
         child1['fitness'] = 0.0
         child2['fitness'] = 0.0
+        child1 = validate_and_fix_genome(child1, config)
+        child2 = validate_and_fix_genome(child2, config)
         child1['innovation_genes'] = build_innovation_genes(child1)
         child2['innovation_genes'] = build_innovation_genes(child2)
         return child1, child2

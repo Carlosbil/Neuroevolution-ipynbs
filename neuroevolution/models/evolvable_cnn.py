@@ -6,6 +6,194 @@ import torch
 import torch.nn as nn
 import random
 from neuroevolution.config import ACTIVATION_FUNCTIONS
+from neuroevolution.models.genome_validator import (
+    calculate_inception_branch_channels,
+    calculate_inception_reduction_channels,
+    validate_and_fix_genome,
+)
+
+
+class ChannelLayerNorm1d(nn.Module):
+    """Applies LayerNorm over channels for Conv1D tensors shaped (N, C, L)."""
+
+    def __init__(self, channels: int):
+        super().__init__()
+        self.layer_norm = nn.LayerNorm(channels)
+
+    def forward(self, x):
+        x = x.transpose(1, 2)
+        x = self.layer_norm(x)
+        return x.transpose(1, 2)
+
+
+class Conv1DUnit(nn.Module):
+    """Conv1D followed by normalization and activation with same-length padding."""
+
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        kernel_size: int,
+        activation_name: str,
+        normalization_type: str,
+        minimum_kernel_size: int = 3,
+    ):
+        super().__init__()
+        kernel_size = max(minimum_kernel_size, kernel_size if kernel_size % 2 == 1 else kernel_size + 1)
+        padding = kernel_size // 2
+
+        self.conv = nn.Conv1d(in_channels, out_channels, kernel_size, padding=padding)
+        if normalization_type == 'layer':
+            self.norm = ChannelLayerNorm1d(out_channels)
+        else:
+            self.norm = nn.BatchNorm1d(out_channels)
+        self.activation = ACTIVATION_FUNCTIONS[activation_name]()
+
+    def forward(self, x):
+        return self.activation(self.norm(self.conv(x)))
+
+
+class ResidualConv1DBlock(nn.Module):
+    """Residual Conv1D block with optional 1x1 projection and block-level pooling."""
+
+    def __init__(
+        self,
+        in_channels: int,
+        filters: list,
+        kernel_sizes: list,
+        activation_names: list,
+        normalization_type: str,
+        residual_projection: str = 'auto',
+        apply_dropout: bool = False,
+    ):
+        super().__init__()
+        self.units = nn.ModuleList()
+
+        current_channels = in_channels
+        for out_channels, kernel_size, activation_name in zip(filters, kernel_sizes, activation_names):
+            self.units.append(
+                Conv1DUnit(
+                    current_channels,
+                    out_channels,
+                    kernel_size,
+                    activation_name,
+                    normalization_type,
+                )
+            )
+            current_channels = out_channels
+
+        out_channels = current_channels
+        if in_channels == out_channels:
+            self.shortcut = nn.Identity()
+        elif residual_projection == 'auto':
+            self.shortcut = nn.Conv1d(in_channels, out_channels, kernel_size=1)
+        else:
+            raise ValueError(
+                f"Unsupported residual projection '{residual_projection}' for channel mismatch "
+                f"{in_channels}->{out_channels}"
+            )
+
+        self.final_activation = ACTIVATION_FUNCTIONS[activation_names[-1]]()
+        self.pool = nn.MaxPool1d(2, 2)
+        self.dropout = nn.Dropout(0.1) if apply_dropout else nn.Identity()
+
+    def forward(self, x):
+        identity = self.shortcut(x)
+        out = x
+        for unit in self.units:
+            out = unit(out)
+        out = self.final_activation(out + identity)
+        out = self.pool(out)
+        return self.dropout(out)
+
+
+class InceptionConv1DModule(nn.Module):
+    """GoogLeNet-style Inception module adapted to same-length Conv1D audio."""
+
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        wide_kernel_size: int,
+        activation_name: str,
+        normalization_type: str,
+        reduction_ratio: float = 0.5,
+        pool_branch: bool = True,
+        min_branch_channels: int = 1,
+    ):
+        super().__init__()
+        wide_kernel_size = max(5, wide_kernel_size if wide_kernel_size % 2 == 1 else wide_kernel_size + 1)
+        self.branch_channels = calculate_inception_branch_channels(
+            out_channels,
+            pool_branch=pool_branch,
+            min_branch_channels=min_branch_channels,
+        )
+        reduction_channels = calculate_inception_reduction_channels(
+            in_channels,
+            reduction_ratio,
+            min_branch_channels=min_branch_channels,
+        )
+
+        self.branches = nn.ModuleDict()
+        self.branches['pointwise'] = Conv1DUnit(
+            in_channels,
+            self.branch_channels['pointwise'],
+            1,
+            activation_name,
+            normalization_type,
+            minimum_kernel_size=1,
+        )
+        self.branches['medium'] = nn.Sequential(
+            Conv1DUnit(
+                in_channels,
+                reduction_channels,
+                1,
+                activation_name,
+                normalization_type,
+                minimum_kernel_size=1,
+            ),
+            Conv1DUnit(
+                reduction_channels,
+                self.branch_channels['medium'],
+                3,
+                activation_name,
+                normalization_type,
+            ),
+        )
+        self.branches['wide'] = nn.Sequential(
+            Conv1DUnit(
+                in_channels,
+                reduction_channels,
+                1,
+                activation_name,
+                normalization_type,
+                minimum_kernel_size=1,
+            ),
+            Conv1DUnit(
+                reduction_channels,
+                self.branch_channels['wide'],
+                wide_kernel_size,
+                activation_name,
+                normalization_type,
+                minimum_kernel_size=5,
+            ),
+        )
+
+        if pool_branch:
+            self.branches['pool'] = nn.Sequential(
+                nn.MaxPool1d(kernel_size=3, stride=1, padding=1),
+                Conv1DUnit(
+                    in_channels,
+                    self.branch_channels['pool'],
+                    1,
+                    activation_name,
+                    normalization_type,
+                    minimum_kernel_size=1,
+                ),
+            )
+
+    def forward(self, x):
+        return torch.cat([branch(x) for branch in self.branches.values()], dim=1)
 
 
 class EvolvableCNN(nn.Module):
@@ -33,6 +221,8 @@ class EvolvableCNN(nn.Module):
     
     def _validate_genome(self):
         """Validates and fixes genome structure to ensure consistency."""
+        self.genome = validate_and_fix_genome(self.genome, self.config)
+
         # Ensure conv-related lists match num_conv_layers
         num_conv = self.genome['num_conv_layers']
         
@@ -69,6 +259,13 @@ class EvolvableCNN(nn.Module):
         
         in_channels = self.config['num_channels']
         normalization_type = self.genome.get('normalization_type', 'batch')
+        residual_enabled = self.genome.get('residual_enabled', False)
+        inception_enabled = self.genome.get('inception_enabled', False)
+
+        if inception_enabled:
+            return self._build_inception_conv_layers(in_channels, normalization_type)
+        if residual_enabled:
+            return self._build_residual_conv_layers(in_channels, normalization_type)
 
         for i in range(self.genome['num_conv_layers']):
             # Safe access with validation
@@ -111,6 +308,111 @@ class EvolvableCNN(nn.Module):
             
             in_channels = out_channels
             
+        return layers
+
+    def _build_inception_conv_layers(self, in_channels: int, normalization_type: str) -> nn.ModuleList:
+        """Builds Inception Conv1D modules according to genome topology."""
+        layers = nn.ModuleList()
+        reduction_ratio = self.genome.get('inception_reduction_ratio', 0.5)
+        pool_branch = self.genome.get('inception_pool_branch', True)
+        min_branch_channels = int(self.config.get('inception_min_branch_channels', 1))
+
+        for i in range(self.genome['num_conv_layers']):
+            out_channels = self.genome['filters'][i]
+            wide_kernel_size = self.genome['kernel_sizes'][i]
+            activation_name = self.genome['activations'][i % len(self.genome['activations'])]
+
+            layers.append(
+                InceptionConv1DModule(
+                    in_channels,
+                    out_channels,
+                    wide_kernel_size,
+                    activation_name,
+                    normalization_type,
+                    reduction_ratio=reduction_ratio,
+                    pool_branch=pool_branch,
+                    min_branch_channels=min_branch_channels,
+                )
+            )
+            layers.append(nn.MaxPool1d(2, 2))
+            if i < self.genome['num_conv_layers'] - 1:
+                layers.append(nn.Dropout(0.1))
+            in_channels = out_channels
+
+        return layers
+
+    def _append_residual_sequential_unit(
+        self,
+        layers: nn.ModuleList,
+        in_channels: int,
+        layer_index: int,
+        normalization_type: str,
+        apply_dropout: bool,
+    ) -> int:
+        """Adds one sequential Conv1D unit used for residual-mode leftovers."""
+        out_channels = self.genome['filters'][layer_index]
+        kernel_size = self.genome['kernel_sizes'][layer_index]
+        activation_name = self.genome['activations'][layer_index % len(self.genome['activations'])]
+
+        layers.append(
+            Conv1DUnit(
+                in_channels,
+                out_channels,
+                kernel_size,
+                activation_name,
+                normalization_type,
+            )
+        )
+        layers.append(nn.MaxPool1d(2, 2))
+        if apply_dropout:
+            layers.append(nn.Dropout(0.1))
+        return out_channels
+
+    def _build_residual_conv_layers(self, in_channels: int, normalization_type: str) -> nn.ModuleList:
+        """Builds residual Conv1D blocks according to genome topology."""
+        layers = nn.ModuleList()
+        num_conv_layers = self.genome['num_conv_layers']
+        block_size = self.genome.get('residual_block_size', 2)
+        residual_projection = self.genome.get('residual_projection', 'auto')
+
+        layer_index = 0
+        while layer_index < num_conv_layers:
+            remaining = num_conv_layers - layer_index
+            current_block_size = min(block_size, remaining)
+
+            if current_block_size == 1:
+                in_channels = self._append_residual_sequential_unit(
+                    layers,
+                    in_channels,
+                    layer_index,
+                    normalization_type,
+                    apply_dropout=layer_index < num_conv_layers - 1,
+                )
+                layer_index += 1
+                continue
+
+            end_index = layer_index + current_block_size
+            block_filters = self.genome['filters'][layer_index:end_index]
+            block_kernels = self.genome['kernel_sizes'][layer_index:end_index]
+            block_activations = [
+                self.genome['activations'][i % len(self.genome['activations'])]
+                for i in range(layer_index, end_index)
+            ]
+
+            layers.append(
+                ResidualConv1DBlock(
+                    in_channels,
+                    block_filters,
+                    block_kernels,
+                    block_activations,
+                    normalization_type,
+                    residual_projection=residual_projection,
+                    apply_dropout=end_index < num_conv_layers,
+                )
+            )
+            in_channels = block_filters[-1]
+            layer_index = end_index
+
         return layers
     
     def _calculate_conv_output_size(self) -> int:
@@ -250,6 +552,29 @@ class EvolvableCNN(nn.Module):
         summary.append(f"FC Nodes: {self.genome['fc_nodes']}")
         summary.append(f"Activations: {self.genome['activations']}")
         summary.append(f"Normalization: {self.genome.get('normalization_type', 'batch')}")
+        summary.append(f"Topology: {self.genome.get('conv_topology', 'sequential')}")
+        if self.genome.get('architecture_template_id'):
+            summary.append(f"Template: {self.genome.get('architecture_template_id')}")
+            summary.append(f"Template Family: {self.genome.get('architecture_template_family', 'unknown')}")
+            summary.append(f"Template Origin: {self.genome.get('architecture_template_origin', 'unknown')}")
+        summary.append(f"Residual Mode: {self.genome.get('residual_enabled', False)}")
+        if self.genome.get('residual_enabled', False):
+            summary.append(f"Residual Block Size: {self.genome.get('residual_block_size', 2)}")
+            summary.append(f"Residual Projection: {self.genome.get('residual_projection', 'auto')}")
+        summary.append(f"Inception Mode: {self.genome.get('inception_enabled', False)}")
+        if self.genome.get('inception_enabled', False):
+            summary.append(f"Inception Reduction Ratio: {self.genome.get('inception_reduction_ratio', 0.5)}")
+            summary.append(f"Inception Pool Branch: {self.genome.get('inception_pool_branch', True)}")
+            min_branch_channels = int(self.config.get('inception_min_branch_channels', 1))
+            branch_summaries = []
+            for i, filters in enumerate(self.genome['filters']):
+                branch_channels = calculate_inception_branch_channels(
+                    filters,
+                    pool_branch=self.genome.get('inception_pool_branch', True),
+                    min_branch_channels=min_branch_channels,
+                )
+                branch_summaries.append(f"L{i+1}:{branch_channels}")
+            summary.append(f"Inception Branch Channels: {branch_summaries}")
         summary.append(f"Dropout: {self.genome['dropout_rate']:.3f}")
         summary.append(f"Optimizer: {self.genome['optimizer']}")
         summary.append(f"Learning Rate: {self.genome['learning_rate']:.4f}")

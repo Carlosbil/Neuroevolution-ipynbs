@@ -9,10 +9,10 @@ Proyecto de investigación para clasificación de voz en detección de Parkinson
 Este repositorio implementa un pipeline híbrido que combina:
 
 1. **Algoritmo genético** para evolucionar arquitecturas de redes Conv1D
-2. **Evaluación de fitness** con F1-score de validación en 5 particiones paralelas (ThreadPoolExecutor)
+2. **Evaluación de fitness** con 5-fold cross-validation en paralelo (ThreadPoolExecutor), usando solo validación durante la evolución y `fitness_metric="f1_score"` por defecto
 3. **Entrenamiento supervisado** con técnicas adaptativas de mutación y cruce
 4. **Checkpointing dinámico** del mejor modelo global según validación durante evolución
-5. **Evaluación final held-out** sobre test con métricas completas (Accuracy, Precision, Recall, F1, AUC, matriz de confusión)
+5. **Evaluación final held-out** con selección por validación y métricas test-only (Accuracy, Precision, Recall, F1, AUC, matriz de confusión)
 
 El objetivo es encontrar arquitecturas robustas para separar clases **Control vs Pathological** en señales de voz.
 
@@ -51,16 +51,16 @@ Organizado en **7 submódulos** (26 archivos .py, ~78 KB):
 - `genome.py` — Crear genomas aleatorios válidos
 - `mutation.py` — Mutación adaptativa (tasa ajusta según diversidad poblacional)
 - `crossover.py` — Cruce alineado por innovación (estilo NEAT)
-- `selection.py` — Elitismo + selección proporcional a fitness
+- `selection.py` — Elitismo, selección por fitness y selección multiobjetivo Pareto
 - `speciation.py` — Agrupación por distancia de compatibilidad, especiación
 
 #### 5. **evolution/**
 - `engine.py` — Orquestador HybridNeuroevolution (generaciones, evolución, estadísticas)
-- `fitness.py` — Evaluación paralela de fitness con 5 particiones train/validation/test (ThreadPoolExecutor max_workers=5)
+- `fitness.py` — Evaluación paralela de fitness con 5-fold CV; el fitness usa validación, no test
 
 #### 6. **evaluation/**
 - `metrics.py` — Cálculo de métricas (accuracy, precision, recall, F1, AUC, sensibilidad, especificidad)
-- `cross_validation.py` — Pipeline de evaluación final con gestión de folds individuales
+- `cross_validation.py` — Pipeline 5-fold final: validación selecciona epoch, test reporta métricas
 - `artifacts.py` — Gestor de artefactos (generación de checkpoints, progreso JSON, logs)
 
 #### 7. **visualization/**
@@ -85,7 +85,7 @@ Ambos notebooks operan sobre el mismo paquete `neuroevolution/`, pero usan confi
 - Especiación genética (agrupación por distancia de compatibilidad)
 - **Sofisticado: menor riesgo de convergencia prematura, mayor diversidad**
 
-Ambos preservan la evaluación paralela de fitness con 5 particiones y métricas agregadas.
+Ambos preservan la evaluación paralela de fitness con 5-fold CV y métricas agregadas. Durante la evolución, el fitness se calcula con el split de validación; el split de test se reserva para la evaluación final del mejor genoma. La selección puede funcionar en modo `fitness` para reproducir el comportamiento escalar clásico, o en modo `pareto` para priorizar tradeoffs entre F1, tiempo de evaluación y número de parámetros.
 
 ## Datos y estructura
 
@@ -119,6 +119,24 @@ Cada fold mantiene tres subconjuntos separados durante todo el pipeline:
 La aptitud evolutiva se calcula como el promedio del F1-score de validación a través de los folds.
 
 Este protocolo no debe describirse como validación cruzada clásica salvo que se aporte un manifiesto que pruebe que cada sujeto aparece en exactamente un subconjunto de test a lo largo de las cinco particiones. En la redacción metodológica, usar "cinco particiones hold-out estratificadas por sujeto" o "protocolo de cinco folds train/validation/test" cuando no se disponga de ese manifiesto.
+
+### Protocolo validación/test
+
+- **Evolución**: train entrena cada fold y validation calcula early stopping, selección del mejor estado y fitness agregado.
+- **Métrica objetivo**: `fitness_metric` controla la métrica agregada como fitness; por defecto es `f1_score`.
+- **Selección de checkpoint por fold**: `fold_selection_metric="fitness_metric"` hace que el mejor estado se guarde con la misma métrica objetivo. También puede fijarse explícitamente a `accuracy`, `precision`, `sensitivity`/`recall`, `specificity`, `f1_score` o `auc`.
+- **Test**: no participa en la presión evolutiva ni en la selección de epoch.
+- **Evaluación final**: validation selecciona/restaura el mejor epoch de cada fold y test produce las métricas finales reportadas.
+- **Migración**: runs antiguos que usaban `val + test` como fitness no son directamente comparables con este protocolo limpio.
+- **Comparabilidad**: runs que seleccionan checkpoints por `accuracy` y runs que los seleccionan por `f1_score` no deben compararse como experimentos idénticos, porque pueden preservar epochs distintos.
+
+### Selección Pareto y coste
+
+- `selection_strategy="pareto"` rankea individuos por dominancia Pareto.
+- Objetivos por defecto: maximizar `fitness`, minimizar `evaluation_time_seconds` y minimizar `parameter_count`.
+- `pareto_fitness_epsilon` permite tratar diferencias muy pequeñas de fitness como equivalentes para no sobrerreaccionar a ganancias marginales caras.
+- `selection_strategy="fitness"` conserva la selección histórica por fitness escalar, útil para comparaciones directas con runs antiguos.
+- Runs Pareto y runs fitness-only no son directamente comparables como experimentos idénticos: cambian la presión evolutiva aunque el checkpoint global siga eligiéndose por mayor fitness escalar.
 
 ### Estructura global (post-refactorización)
 
@@ -159,7 +177,7 @@ Notebook (7 celdas):
 │
 ├── Celdas 4-5: Evolución
 │   └─> neuroevolution.HybridNeuroevolution(...).evolve()
-│       ├─> Parallel validation fitness eval (5 fold threads)
+│       ├─> Parallel fitness eval (5 fold threads, validation-only)
 │       ├─> Mutation/crossover/selection from genetics/
 │       ├─> Validation-selected checkpoint save (artifacts/*)
 │       └─> Progress logging
@@ -197,6 +215,9 @@ En ambos notebooks se define un diccionario `CONFIG` con ~32 parámetros:
 - `max_generations` (default 100): Límite de generaciones
 - `fitness_threshold` (default 98.0): Detener si se alcanza
 - `elite_percentage` (default 0.2): Preservar mejores individuos
+- `selection_strategy` (default `pareto`): `pareto` usa ranking multiobjetivo; `fitness` conserva selección escalar clásica
+- `pareto_objectives`: objetivos por defecto fitness/tiempo/parámetros
+- `pareto_fitness_epsilon` (default 0.0): tolerancia para diferencias mínimas de fitness
 
 **Mutación/Crossover**:
 - `base_mutation_rate` (default 0.3)
@@ -214,6 +235,9 @@ En ambos notebooks se define un diccionario `CONFIG` con ~32 parámetros:
 - `num_epochs` (default 50)
 - `learning_rate` (default 0.001)
 - `batch_size` (default 32)
+- `fitness_metric` (default `f1_score`): métrica agregada como fitness evolutivo
+- `fold_selection_metric` (default `fitness_metric`): métrica usada para guardar el mejor estado por fold y seleccionar el epoch en evaluación final
+- `metric_improvement_threshold` (default `None`): umbral para la métrica seleccionada; si es `None`, usa `improvement_threshold`
 - Early stopping thresholds
 
 **Datos**:
@@ -287,7 +311,7 @@ Después de ejecutar, se crean en `artifacts/{best_audio|test_audio}/`:
 artifacts/best_audio/
 ├── execution_log.txt              # Todas las salidas de print()
 ├── generation_progress.txt        # Resumen legible por generación
-├── evolution_progress.json        # Estadísticas JSON (fitness, diversity, etc.)
+├── evolution_progress.json        # Estadísticas JSON (fitness, Pareto, coste, diversity, etc.)
 ├── best_model_checkpoint.pth      # Checkpoint del mejor global seleccionado por validación
 ├── final_cv_results.json          # Métricas finales held-out de test (accuracy, F1, AUC, matriz)
 ├── fitness_evolution.png          # Gráfica de evolución de fitness
@@ -320,8 +344,11 @@ Tests validan:
 - ✅ Carga de datos (diferentes folds, fallback de rutas)
 - ✅ Validación de genomas (3-tier prevention/fix/runtime)
 - ✅ Operadores genéticos (mutation, crossover, selection)
+- ✅ Selección Pareto: dominancia, frentes, crowding distance y torneo cost-aware
 - ✅ Entrenamiento del modelo (forward pass, backward, update)
-- ✅ Evaluación paralela (5 particiones con ThreadPoolExecutor)
+- ✅ Evaluación paralela (5-fold ThreadPoolExecutor)
+- ✅ Separación validation/test: fitness solo con validación y test solo en evaluación final
+- ✅ Selección de checkpoint por métrica configurable: F1 por defecto o accuracy explícita para compatibilidad
 - ✅ Checkpointing (save/load state_dict, genome, config)
 - ✅ Equivalencia numérica (tolerancias: ±1e-7 float32, ±1e-5 CUDA)
 
@@ -397,7 +424,7 @@ Configurable vía `dataset_id`, `fold_id` y `fold_files_subdirectory` en CONFIG.
 
 - ✅ Refactorización completada (19+ módulos, 7 paquetes)
 - ✅ Notebooks actualizados a orquestadores ligeros
-- ✅ Tests operacionales (32 suites, 4 niveles de validación)
+- ✅ Tests operacionales y regresiones de protocolo validation/test
 - ✅ Documentación refrescada
 - 🔲 Validación en CI/CD (próximo fase)
 

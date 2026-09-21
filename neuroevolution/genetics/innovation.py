@@ -61,6 +61,32 @@ def build_innovation_genes(genome: dict) -> list:
             'enabled': True
         })
 
+    residual_fields = (
+        ('residual_enabled', bool(genome.get('residual_enabled', False))),
+        ('residual_block_size', int(genome.get('residual_block_size', 2))),
+        ('residual_projection', str(genome.get('residual_projection', 'auto'))),
+    )
+    for gene_key, value in residual_fields:
+        genes.append({
+            'innovation_id': innovation_uuid(gene_key, {'value': value}),
+            'gene_key': gene_key,
+            'value': value,
+            'enabled': True
+        })
+
+    inception_fields = (
+        ('inception_enabled', bool(genome.get('inception_enabled', False))),
+        ('inception_reduction_ratio', float(genome.get('inception_reduction_ratio', 0.5))),
+        ('inception_pool_branch', bool(genome.get('inception_pool_branch', True))),
+    )
+    for gene_key, value in inception_fields:
+        genes.append({
+            'innovation_id': innovation_uuid(gene_key, {'value': value}),
+            'gene_key': gene_key,
+            'value': value,
+            'enabled': True
+        })
+
     return genes
 
 

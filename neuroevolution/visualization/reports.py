@@ -13,7 +13,13 @@ from typing import Optional
 
 import torch
 
+from ..models.architecture_formatting import format_genome_architecture
 from ..models.evolvable_cnn import EvolvableCNN
+from ..models.genome_validator import calculate_inception_branch_channels
+
+
+def _format_architecture(genome: dict) -> str:
+    return format_genome_architecture(genome)
 
 
 def display_best_architecture(
@@ -42,20 +48,55 @@ def display_best_architecture(
     print(f"   Dataset: {config['dataset']}")
     print(f"   Dataset ID: {config.get('dataset_id', 'N/A')}")
     print(f"   Fold: {config.get('current_fold', 'N/A')}")
+    if best_genome.get("architecture_template_id"):
+        print(f"   Template: {best_genome.get('architecture_template_id')}")
+        print(f"   Template Family: {best_genome.get('architecture_template_family', 'N/A')}")
+        print(f"   Template Origin: {best_genome.get('architecture_template_origin', 'N/A')}")
 
     print("\nNETWORK ARCHITECTURE:")
     print(f"   Input: 1D Audio Signal (length={config['sequence_length']})")
     print(f"   Convolutional Layers (Conv1D): {best_genome['num_conv_layers']}")
     print(f"   Fully Connected Layers: {best_genome['num_fc_layers']}")
+    print(f"   Residual Enabled: {best_genome.get('residual_enabled', False)}")
+    if best_genome.get("residual_enabled", False):
+        print(f"   Residual Block Size: {best_genome.get('residual_block_size', 2)}")
+        print(f"   Residual Projection: {best_genome.get('residual_projection', 'auto')}")
+    print(f"   Inception Enabled: {best_genome.get('inception_enabled', False)}")
+    if best_genome.get("inception_enabled", False):
+        print(f"   Inception Reduction Ratio: {best_genome.get('inception_reduction_ratio', 0.5)}")
+        print(f"   Inception Pool Branch: {best_genome.get('inception_pool_branch', True)}")
     print(f"   Output: {config['num_classes']} classes")
 
     print("\nCONVOLUTIONAL LAYER DETAILS (1D):")
+    residual_enabled = best_genome.get("residual_enabled", False)
+    residual_block_size = best_genome.get("residual_block_size", 2)
+    inception_enabled = best_genome.get("inception_enabled", False)
+    inception_pool_branch = best_genome.get("inception_pool_branch", True)
+    min_branch_channels = int(config.get("inception_min_branch_channels", 1))
     for i in range(best_genome["num_conv_layers"]):
         filters = best_genome["filters"][i]
         kernel = best_genome["kernel_sizes"][i]
         activation = best_genome["activations"][i % len(best_genome["activations"])]
         print(f"   Conv1D-{i+1}: {filters} filters, kernel_size={kernel}, activation={activation}")
-        print(f"             -> BatchNorm1D -> {activation.upper()} -> MaxPool1D(2)")
+        if inception_enabled:
+            branch_channels = calculate_inception_branch_channels(
+                filters,
+                pool_branch=inception_pool_branch,
+                min_branch_channels=min_branch_channels,
+            )
+            print(
+                f"             -> Inception branches {branch_channels}; "
+                f"medium kernel=3, wide kernel={kernel}, MaxPool1D(2) after module"
+            )
+        elif residual_enabled:
+            block_number = (i // residual_block_size) + 1
+            block_position = (i % residual_block_size) + 1
+            print(
+                f"             -> Residual block {block_number}, unit {block_position}; "
+                "MaxPool1D(2) after block"
+            )
+        else:
+            print(f"             -> BatchNorm1D -> {activation.upper()} -> MaxPool1D(2)")
 
     print("\nFULLY CONNECTED LAYER DETAILS:")
     for i, nodes in enumerate(best_genome["fc_nodes"]):
@@ -90,9 +131,20 @@ def display_best_architecture(
     print(f"{'Parameter':<25} {'Value':<30} {'Description':<25}")
     print(f"{'='*80}")
     print(f"{'ID':<25} {best_genome['id']:<30} {'Unique identifier':<25}")
-    print(f"{'Fitness':<25} {best_genome['fitness']:.2f}%{'':<25} {'Validation F1-score':<25}")
-    print(f"{'Architecture':<25} {'Conv1D + FC':<30} {'1D Convolutional':<25}")
+    print(f"{'Fitness':<25} {best_genome['fitness']:.2f}%{'':<25} {'Validation fitness':<25}")
+    print(f"{'Architecture':<25} {_format_architecture(best_genome):<30} {'1D Convolutional':<25}")
+    if best_genome.get("architecture_template_id"):
+        print(f"{'Template':<25} {best_genome.get('architecture_template_id'):<30} {'Known architecture seed':<25}")
+        print(f"{'Template Family':<25} {best_genome.get('architecture_template_family', 'N/A'):<30} {'Template lineage':<25}")
     print(f"{'Conv Layers':<25} {best_genome['num_conv_layers']:<30} {'Conv1D layers':<25}")
+    print(f"{'Residual':<25} {str(best_genome.get('residual_enabled', False)):<30} {'Residual Conv1D blocks':<25}")
+    if best_genome.get("residual_enabled", False):
+        print(f"{'Residual Block Size':<25} {best_genome.get('residual_block_size', 2):<30} {'Conv units per block':<25}")
+        print(f"{'Residual Projection':<25} {best_genome.get('residual_projection', 'auto'):<30} {'Shortcut projection':<25}")
+    print(f"{'Inception':<25} {str(best_genome.get('inception_enabled', False)):<30} {'Inception Conv1D modules':<25}")
+    if best_genome.get("inception_enabled", False):
+        print(f"{'Inception Reduction':<25} {best_genome.get('inception_reduction_ratio', 0.5):<30} {'1x1 reduction ratio':<25}")
+        print(f"{'Inception Pool Branch':<25} {str(best_genome.get('inception_pool_branch', True)):<30} {'Pooling branch':<25}")
     print(f"{'FC Layers':<25} {best_genome['num_fc_layers']:<30} {'FC layers':<25}")
     print(f"{'Optimizer':<25} {best_genome['optimizer']:<30} {'Optimization algorithm':<25}")
     print(f"{'Learning Rate':<25} {best_genome['learning_rate']:<30.6f} {'Learning rate':<25}")
@@ -163,9 +215,20 @@ def print_checkpoint_info(neuroevolution, device: torch.device) -> None:
             print(f"    Fitness: {checkpoint_data['fitness']:.2f}%")
             print(f"    ID Genoma: {checkpoint_data['genome']['id']}")
             print(
-                f"    Arquitectura: {checkpoint_data['genome']['num_conv_layers']} Conv1D + "
-                f"{checkpoint_data['genome']['num_fc_layers']} FC"
+                f"    Arquitectura: {_format_architecture(checkpoint_data['genome'])}"
             )
+            if checkpoint_data['genome'].get('architecture_template_id'):
+                print(f"    Template: {checkpoint_data['genome'].get('architecture_template_id')}")
+                print(f"    Template Family: {checkpoint_data['genome'].get('architecture_template_family', 'N/A')}")
+                print(f"    Template Origin: {checkpoint_data['genome'].get('architecture_template_origin', 'N/A')}")
+            print(f"    Residual: {checkpoint_data['genome'].get('residual_enabled', False)}")
+            if checkpoint_data['genome'].get('residual_enabled', False):
+                print(f"    Residual Block Size: {checkpoint_data['genome'].get('residual_block_size', 2)}")
+                print(f"    Residual Projection: {checkpoint_data['genome'].get('residual_projection', 'auto')}")
+            print(f"    Inception: {checkpoint_data['genome'].get('inception_enabled', False)}")
+            if checkpoint_data['genome'].get('inception_enabled', False):
+                print(f"    Inception Reduction Ratio: {checkpoint_data['genome'].get('inception_reduction_ratio', 0.5)}")
+                print(f"    Inception Pool Branch: {checkpoint_data['genome'].get('inception_pool_branch', True)}")
             print(f"    Optimizador: {checkpoint_data['genome']['optimizer']}")
             print(f"    Learning Rate: {checkpoint_data['genome']['learning_rate']}")
 
