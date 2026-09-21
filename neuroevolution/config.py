@@ -30,6 +30,32 @@ def canonical_metric_name(metric_name: str) -> str:
     return METRIC_ALIASES.get(normalized, normalized)
 
 
+def get_data_phase_config(config: dict, phase: str) -> dict:
+    """Return a copy of *config* bound to the data source for one protocol phase.
+
+    The genetic search and the final real-data evaluation deliberately use
+    different fold sources.  Keeping the selectors in one configuration avoids
+    mutating the caller's configuration between the two phases.
+    """
+    normalized_phase = str(phase).strip().lower()
+    selectors = {
+        'evolution': ('evolution_dataset_id', 'evolution_fold_files_subdirectory'),
+        'final_evaluation': ('final_dataset_id', 'final_fold_files_subdirectory'),
+    }
+    if normalized_phase not in selectors:
+        valid_phases = ', '.join(sorted(selectors))
+        raise ValueError(f"phase must be one of: {valid_phases}")
+
+    dataset_key, directory_key = selectors[normalized_phase]
+    phase_config = dict(config)
+    phase_config['dataset_id'] = config.get(dataset_key, config.get('dataset_id'))
+    phase_config['fold_files_subdirectory'] = config.get(
+        directory_key,
+        config.get('fold_files_subdirectory'),
+    )
+    return phase_config
+
+
 def get_activation_functions() -> dict:
     """Returns mapping of activation function names to PyTorch classes."""
     return {
@@ -105,7 +131,9 @@ def get_default_config(info_path: str = None) -> dict:
         # This must match the input data because it determines the first FC layer.
         'sequence_length': 11520,
         'num_classes': 2,
-        'batch_size': 64,
+        # With the real-only folds (180 train examples), 128 keeps the H100
+        # Tensor Cores busy while retaining more than one optimizer step/epoch.
+        'batch_size': 128,
         'test_split': 0.2,
         
         # Training parameters
@@ -113,7 +141,9 @@ def get_default_config(info_path: str = None) -> dict:
         'learning_rate': 0.0001,
         'early_stopping_patience': 100000,
         'use_amp': True,
-        'amp_dtype': 'float16',
+        # H100: BF16 uses Tensor Cores with FP32-like exponent range, avoiding
+        # the loss-scaling overhead required by FP16.
+        'amp_dtype': 'bfloat16',
         'validation_frequency_epochs': 1,
         'fitness_metric': 'f1_score',
         'checkpoint_metric': 'f1_score',
@@ -123,8 +153,11 @@ def get_default_config(info_path: str = None) -> dict:
         # Fold evaluation and data loading performance
         'fold_parallel_workers': 5,
         'fold_cache_mode': 'ram',  # Options: 'none', 'ram', 'memmap'
-        'dataloader_num_workers': 4,
-        'dataloader_persistent_workers': True,
+        # Fold arrays are cached in RAM as tensors. Extra worker processes add
+        # IPC overhead (and multiply across the five parallel folds) without
+        # performing decoding or augmentation work.
+        'dataloader_num_workers': 0,
+        'dataloader_persistent_workers': False,
         'dataloader_prefetch_factor': 2,
         'dataloader_pin_memory': True,
         
@@ -212,14 +245,19 @@ def get_default_config(info_path: str = None) -> dict:
         'artifact_dir': info_path,
         'artifacts_dir': info_path,
         
-        # Article-safe default: real-only 60/20/20 fold files.
-        # Synthetic fold variants are exploratory unless a subject manifest proves
-        # that validation/test subjects never contribute synthetic training data.
-        'dataset_id': 'real_N',
+        # Protocol: the genetic search sees synthetic folds only.  Once it has
+        # selected an architecture, that architecture is retrained and reported
+        # from scratch using real folds only.  `dataset_id` remains the active
+        # selector for legacy callers and is intentionally the evolution source.
+        'evolution_dataset_id': '40_1e5_N',
+        'evolution_fold_files_subdirectory': 'files_syn_all_N',
+        'final_dataset_id': 'real_N',
+        'final_fold_files_subdirectory': 'files_real_N',
+        'dataset_id': '40_1e5_N',
         'fold_id': 'N',
         'num_folds': 5,
         'data_path': os.path.join('data', 'sets', 'folds_5'),
-        'fold_files_subdirectory': 'files_real_N',
+        'fold_files_subdirectory': 'files_syn_all_N',
         'normalization': {'mean': (0.0,), 'std': (1.0,)}
     }
 
@@ -310,9 +348,20 @@ def validate_config(config: dict) -> None:
     if config['batch_size'] < 1:
         raise ValueError("batch_size must be at least 1")
 
+    for key in (
+        'evolution_dataset_id',
+        'evolution_fold_files_subdirectory',
+        'final_dataset_id',
+        'final_fold_files_subdirectory',
+    ):
+        if key in config and not str(config[key]).strip():
+            raise ValueError(f"{key} must be a non-empty string")
+
     # Performance-related parameters
     if int(config.get('validation_frequency_epochs', 1)) < 1:
         raise ValueError("validation_frequency_epochs must be at least 1")
+    if str(config.get('amp_dtype', 'float16')).lower() not in {'float16', 'bfloat16'}:
+        raise ValueError("amp_dtype must be either 'float16' or 'bfloat16'")
     if int(config.get('fold_parallel_workers', 1)) < 1:
         raise ValueError("fold_parallel_workers must be at least 1")
 

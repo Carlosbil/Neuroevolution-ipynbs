@@ -1,0 +1,125 @@
+{
+  "fold_results": [
+    {
+      "fold": 1,
+      "accuracy": 100.0,
+      "sensitivity": 100.0,
+      "specificity": 100.0,
+      "f1_score": 100.0,
+      "auc": 100.0,
+      "confusion_matrix": [
+        [
+          1,
+          0
+        ],
+        [
+          0,
+          1
+        ]
+      ],
+      "n_samples": 2,
+      "best_epoch": 1
+    },
+    {
+      "fold": 2,
+      "accuracy": 100.0,
+      "sensitivity": 100.0,
+      "specificity": 100.0,
+      "f1_score": 100.0,
+      "auc": 100.0,
+      "confusion_matrix": [
+        [
+          1,
+          0
+        ],
+        [
+          0,
+          1
+        ]
+      ],
+      "n_samples": 2,
+      "best_epoch": 1
+    },
+    {
+      "fold": 3,
+      "accuracy": 100.0,
+      "sensitivity": 100.0,
+      "specificity": 100.0,
+      "f1_score": 100.0,
+      "auc": 100.0,
+      "confusion_matrix": [
+        [
+          1,
+          0
+        ],
+        [
+          0,
+          1
+        ]
+      ],
+      "n_samples": 2,
+      "best_epoch": 1
+    },
+    {
+      "fold": 4,
+      "accuracy": 100.0,
+      "sensitivity": 100.0,
+      "specificity": 100.0,
+      "f1_score": 100.0,
+      "auc": 100.0,
+      "confusion_matrix": [
+        [
+          1,
+          0
+        ],
+        [
+          0,
+          1
+        ]
+      ],
+      "n_samples": 2,
+      "best_epoch": 1
+    },
+    {
+      "fold": 5,
+      "accuracy": 100.0,
+      "sensitivity": 100.0,
+      "specificity": 100.0,
+      "f1_score": 100.0,
+      "auc": 100.0,
+      "confusion_matrix": [
+        [
+          1,
+          0
+        ],
+        [
+          0,
+          1
+        ]
+      ],
+      "n_samples": 2,
+      "best_epoch": 1
+    }
+  ],
+  "mean_accuracy": 100.0,
+  "std_accuracy": 0.0,
+  "mean_sensitivity": 100.0,
+  "std_sensitivity": 0.0,
+  "mean_specificity": 100.0,
+  "std_specificity": 0.0,
+  "mean_f1": 100.0,
+  "std_f1": 0.0,
+  "mean_auc": 100.0,
+  "std_auc": 0.0,
+  "n_folds": 5,
+  "architecture": "seq, 1C, 1FC",
+  "num_epochs_used": 1,
+  "selection_metric": "f1_score",
+  "selection_split": "validation",
+  "evaluation_split": "test",
+  "evolution_dataset_id": "40_1e5_N",
+  "evolution_fold_files_subdirectory": "files_syn_all_N",
+  "final_dataset_id": "real_N",
+  "final_fold_files_subdirectory": "files_real_N",
+  "results_path": "G:\\Neuroevolution-ipynbs\\.pytest-runtime-verify\\test_final_evaluation_loads_re0\\5fold_cv_results_20260921_160143.json"
+}

@@ -9,7 +9,7 @@ from neuroevolution.evolution.fitness import (
 )
 from neuroevolution.evolution.engine import HybridNeuroevolution
 from neuroevolution.evaluation import cross_validation
-from neuroevolution.config import get_default_config
+from neuroevolution.config import get_data_phase_config, get_default_config
 
 
 def _write_fold_arrays(base_dir, dataset_id="demo", fold=1):
@@ -117,6 +117,57 @@ def test_default_config_aligns_checkpoint_and_fitness_metrics():
 
     assert config["fitness_metric"] == "f1_score"
     assert config["checkpoint_metric"] == "f1_score"
+
+
+def test_default_config_separates_synthetic_evolution_from_real_final_evaluation():
+    config = get_default_config()
+
+    evolution_config = get_data_phase_config(config, "evolution")
+    final_config = get_data_phase_config(config, "final_evaluation")
+
+    assert evolution_config["dataset_id"] == "40_1e5_N"
+    assert evolution_config["fold_files_subdirectory"] == "files_syn_all_N"
+    assert final_config["dataset_id"] == "real_N"
+    assert final_config["fold_files_subdirectory"] == "files_real_N"
+
+
+def test_final_evaluation_loads_real_source_even_when_active_source_is_synthetic(monkeypatch, tmp_path):
+    captured = []
+    loaders = fitness_module.FoldLoaders(train=[], validation=[], test=[])
+
+    def fake_load_fold_loaders(config, fold_number, device=None):
+        captured.append((config["dataset_id"], config["fold_files_subdirectory"]))
+        return loaders
+
+    monkeypatch.setattr(cross_validation, "load_fold_loaders", fake_load_fold_loaders)
+    monkeypatch.setattr(cross_validation, "evaluate_single_fold", lambda *args, **kwargs: {
+        "fold": args[5],
+        "accuracy": 100.0,
+        "sensitivity": 100.0,
+        "specificity": 100.0,
+        "f1_score": 100.0,
+        "auc": 100.0,
+        "confusion_matrix": np.eye(2, dtype=int),
+        "n_samples": 2,
+        "best_epoch": 1,
+    })
+
+    config = get_default_config(info_path=str(tmp_path))
+    result = cross_validation.evaluate_5fold_cross_validation(
+        best_genome={
+            "num_conv_layers": 1,
+            "num_fc_layers": 1,
+            "optimizer": "sgd",
+            "learning_rate": 0.01,
+        },
+        config=config,
+        device=torch.device("cpu"),
+        num_epochs=1,
+    )
+
+    assert result is not None
+    assert captured == [("real_N", "files_real_N")] * 5
+    assert result["final_dataset_id"] == "real_N"
 
 
 def test_evolution_fitness_uses_validation_not_test(tmp_path, monkeypatch):

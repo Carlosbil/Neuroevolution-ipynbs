@@ -17,7 +17,12 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Tuple
 
 from ..models.evolvable_cnn import EvolvableCNN
-from ..config import OPTIMIZERS, SUPPORTED_METRIC_NAMES, canonical_metric_name
+from ..config import (
+    OPTIMIZERS,
+    SUPPORTED_METRIC_NAMES,
+    canonical_metric_name,
+    get_data_phase_config,
+)
 
 _FOLD_DATALOADER_CACHE = {}
 _FOLD_DATALOADER_CACHE_LOCK = threading.Lock()
@@ -257,7 +262,10 @@ def _evaluate_model_on_loader(
 
             all_targets.extend(target.cpu().numpy().tolist())
             all_preds.extend(predicted.cpu().numpy().tolist())
-            all_probs.extend(probs[:, 1].cpu().numpy().tolist())
+            # NumPy does not support BF16 tensors.  AMP may produce BF16
+            # probabilities on CUDA, so promote only the values exported for
+            # metric calculation; model computation remains in AMP precision.
+            all_probs.extend(probs[:, 1].float().cpu().numpy().tolist())
 
     return _metrics_from_predictions(np.array(all_targets), np.array(all_preds), all_probs)
 
@@ -279,7 +287,10 @@ def evaluate_fitness(genome: dict, config: dict, device: torch.device) -> Tuple[
             - model: modelo entrenado en el mejor fold (para checkpoint)
             - metrics: diccionario con metricas agregadas de todos los folds
     """
-    print(f"      Training/evaluating model {genome['id']} with PARALLEL 5-FOLD TRAIN/VALIDATION/TEST PROTOCOL")
+    print(
+        f"      Training/evaluating model {genome['id']} with PARALLEL "
+        "5-FOLD SYNTHETIC TRAIN/VALIDATION PROTOCOL"
+    )
 
     fold_scores = {}
     fold_models = {}
@@ -288,6 +299,9 @@ def evaluate_fitness(genome: dict, config: dict, device: torch.device) -> Tuple[
     selection_metric = 'f1_score'
 
     try:
+        # The complete evolutionary loop is isolated to the synthetic source.
+        # Final real-data evaluation is performed only by cross_validation.py.
+        evolution_config = get_data_phase_config(config, 'evolution')
         fitness_metric = resolve_metric_name(config, 'fitness_metric')
         selection_metric = resolve_metric_name(config, 'fold_selection_metric')
         num_folds = int(config.get('num_folds', 5))
@@ -298,7 +312,7 @@ def evaluate_fitness(genome: dict, config: dict, device: torch.device) -> Tuple[
             # Enviar folds a threads separados
             print(f"      -> Submitting {num_folds} folds to thread pool (workers={fold_workers})...")
             futures = {
-                executor.submit(train_fold_in_thread, genome, fold_num, config, device): fold_num
+                executor.submit(train_fold_in_thread, genome, fold_num, evolution_config, device): fold_num
                 for fold_num in range(1, num_folds + 1)
             }
 
@@ -409,9 +423,10 @@ def train_fold_in_thread(genome: dict, fold_num: int, config: dict, device: torc
         Tuple of (fold_num, score, model, metrics)
     """
     try:
+        evolution_config = get_data_phase_config(config, 'evolution')
         fold_train_loader, fold_validation_loader = load_fold_data(
             fold_num,
-            config,
+            evolution_config,
             device,
             eval_split='validation',
         )
@@ -513,6 +528,7 @@ def train_fold_in_thread(genome: dict, fold_num: int, config: dict, device: torc
 
         metrics.update({
             'evaluation_split': 'validation',
+            'selection_split': 'validation',
             'fitness_metric': fitness_metric,
             'selection_metric': selection_metric,
             'checkpoint_metric': str(config.get('checkpoint_metric', config.get('fitness_metric', 'f1_score'))),
@@ -596,20 +612,56 @@ def load_fold_loaders(fold_number: int, config: dict, device: torch.device) -> F
         fold_number: Numero de fold (1-5)
         config: Configuration dictionary
         device: PyTorch device (CPU or CUDA)
-        eval_split: Which evaluation split to load. Use "validation" for
-            evolutionary fitness, "test" for final reporting,
-            "validation_and_test" only for explicit legacy compatibility, or
-            "all" to return train, validation, and test loaders separately.
-
     Returns:
-        Tuple de DataLoaders. Returns (train, eval) for split-specific modes
-        or (train, validation, test) for eval_split="all".
+        Named train, validation, and test loaders.  This explicit contract
+        prevents a caller from accidentally merging validation and test.
     """
-    eval_split = _normalize_eval_split(eval_split)
     cache_mode = _resolve_cache_mode(config)
     cache_enabled = cache_mode in {'ram', 'memmap'}
 
     if not cache_enabled:
+        train, validation, test = _load_fold_data_uncached(
+            fold_number, config, device, cache_mode, 'all'
+        )
+        return FoldLoaders(train=train, validation=validation, test=test)
+
+    cache_key = _build_fold_cache_key(fold_number, config, device, cache_mode, 'all')
+    with _FOLD_DATALOADER_CACHE_LOCK:
+        cached = _FOLD_DATALOADER_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+
+    train, validation, test = _load_fold_data_uncached(
+        fold_number, config, device, cache_mode, 'all'
+    )
+    loaded = FoldLoaders(train=train, validation=validation, test=test)
+    with _FOLD_DATALOADER_CACHE_LOCK:
+        # Avoid duplicate work if another thread loaded the same key in parallel.
+        existing = _FOLD_DATALOADER_CACHE.get(cache_key)
+        if existing is not None:
+            return existing
+        _FOLD_DATALOADER_CACHE[cache_key] = loaded
+        return loaded
+
+
+def load_fold_data(
+    fold_number: int,
+    config: dict,
+    device: torch.device,
+    eval_split: str = 'validation',
+) -> Tuple[DataLoader, ...]:
+    """
+    Compatibility wrapper returning the requested explicit fold split.
+
+    New code should call load_fold_loaders() so the test split remains explicit.
+    """
+    eval_split = _normalize_eval_split(eval_split)
+    if eval_split == 'all':
+        loaders = load_fold_loaders(fold_number, config, device)
+        return loaders.train, loaders.validation, loaders.test
+
+    cache_mode = _resolve_cache_mode(config)
+    if cache_mode == 'none':
         return _load_fold_data_uncached(fold_number, config, device, cache_mode, eval_split)
 
     cache_key = _build_fold_cache_key(fold_number, config, device, cache_mode, eval_split)
@@ -620,22 +672,11 @@ def load_fold_loaders(fold_number: int, config: dict, device: torch.device) -> F
 
     loaded = _load_fold_data_uncached(fold_number, config, device, cache_mode, eval_split)
     with _FOLD_DATALOADER_CACHE_LOCK:
-        # Avoid duplicate work if another thread loaded the same key in parallel.
         existing = _FOLD_DATALOADER_CACHE.get(cache_key)
         if existing is not None:
             return existing
         _FOLD_DATALOADER_CACHE[cache_key] = loaded
         return loaded
-
-
-def load_fold_data(fold_number: int, config: dict, device: torch.device) -> Tuple[DataLoader, DataLoader]:
-    """
-    Compatibility wrapper returning train and validation loaders.
-
-    New code should call load_fold_loaders() so the test split remains explicit.
-    """
-    loaders = load_fold_loaders(fold_number, config, device)
-    return loaders.train, loaders.validation
 
 
 def _load_fold_data_uncached(

@@ -18,7 +18,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from sklearn.metrics import confusion_matrix
 
-from ..config import OPTIMIZERS
+from ..config import OPTIMIZERS, get_data_phase_config
 from ..evolution.fitness import (
     FoldLoaders,
     compute_classification_metrics,
@@ -97,7 +97,36 @@ def load_fold_data(
     return load_fold_data_from_evolution(fold_number, config, device, eval_split="all")
 
 
-def evaluate_single_fold(
+def _evaluate_loader_metrics(
+    model: nn.Module,
+    loader: torch.utils.data.DataLoader,
+    device: torch.device,
+) -> Dict[str, Any]:
+    """Evaluate one explicit loader and retain the data needed for reporting."""
+    model.eval()
+    predictions = []
+    targets = []
+    probabilities = []
+
+    with torch.no_grad():
+        for data, target in loader:
+            data = data.to(device, non_blocking=True)
+            target = target.to(device, non_blocking=True)
+            output = model(data)
+            probs = F.softmax(output, dim=1)
+            predicted = torch.argmax(output, dim=1)
+
+            predictions.extend(predicted.cpu().tolist())
+            targets.extend(target.cpu().tolist())
+            probabilities.extend(probs[:, 1].float().cpu().tolist())
+
+    metrics = compute_classification_metrics(targets, predictions, probabilities)
+    metrics['confusion_matrix'] = confusion_matrix(targets, predictions)
+    metrics['n_samples'] = len(targets)
+    return metrics
+
+
+def _evaluate_single_fold_legacy(
     best_genome: dict,
     config: dict,
     fold_train_loader: torch.utils.data.DataLoader,
@@ -110,7 +139,10 @@ def evaluate_single_fold(
     pretrained_model: Optional[nn.Module] = None
 ) -> Dict[str, Any]:
     """
-    Train one fold, select the best epoch by validation, and report test metrics.
+    Deprecated implementation retained for historical checkpoint compatibility.
+
+    The public implementation below is the only evaluation path used by the
+    package and notebook.
 
     Args:
         best_genome: Best architecture genome.
@@ -323,18 +355,20 @@ def evaluate_single_fold(
     optimizer = optimizer_class(model.parameters(), lr=best_genome["learning_rate"])
     criterion = nn.CrossEntropyLoss()
 
+    selection_metric = resolve_metric_name(config, "fold_selection_metric")
     checkpoint_metric = config.get("checkpoint_metric", config.get("fitness_metric", "f1_score"))
-    best_validation_score = -float("inf")
+    best_selection_score = -float("inf")
+    best_selection_metrics = None
     best_model_state = None
     best_epoch = 0
 
     patience = config.get("epoch_patience", 10)
     patience_counter = 0
-    last_improvement_score = 0.0
-    improvement_threshold = config.get("improvement_threshold", 0.01)
+    last_improvement_score = -float("inf")
+    improvement_threshold = resolve_metric_improvement_threshold(config)
 
     print(f"Entrenando por hasta {num_epochs} épocas (patience={patience})...")
-    print(f"Guardando el MEJOR modelo basado en validation {checkpoint_metric}")
+    print(f"Guardando el MEJOR modelo basado en validation {selection_metric}")
 
     for epoch in range(1, num_epochs + 1):
         model.train()
@@ -356,15 +390,16 @@ def evaluate_single_fold(
         avg_loss = running_loss / max(1, batch_count)
 
         validation_metrics = _evaluate_loader_metrics(model, fold_validation_loader, device)
-        current_score = validation_metrics.get(checkpoint_metric, validation_metrics["f1_score"])
+        current_score = metric_value(validation_metrics, selection_metric)
 
-        if current_score > best_validation_score:
-            best_validation_score = current_score
-            best_model_state = {k: v.clone() for k, v in model.state_dict().items()}
+        if current_score > (best_selection_score + improvement_threshold):
+            best_selection_score = current_score
+            best_selection_metrics = validation_metrics
+            best_model_state = {k: v.detach().clone() for k, v in model.state_dict().items()}
             best_epoch = epoch
             print(
                 f"   Época {epoch}/{num_epochs}: loss={avg_loss:.4f}, "
-                f"val_{checkpoint_metric}={current_score:.2f}% *** NUEVO MEJOR ***"
+                f"val_{selection_metric}={current_score:.2f}% *** NUEVO MEJOR ***"
             )
 
         improvement = current_score - last_improvement_score
@@ -377,8 +412,8 @@ def evaluate_single_fold(
         if epoch % 30 == 0 or epoch == 1:
             print(
                 f"   Época {epoch}/{num_epochs}: loss={avg_loss:.4f}, "
-                f"val_{checkpoint_metric}={current_score:.2f}% "
-                f"(best={best_validation_score:.2f}%)"
+                f"val_{selection_metric}={current_score:.2f}% "
+                f"(best={best_selection_score:.2f}%)"
             )
 
         if patience_counter >= patience:
@@ -389,13 +424,17 @@ def evaluate_single_fold(
         model.load_state_dict(best_model_state)
         print(
             f"\n   ✓ Cargado mejor modelo de época {best_epoch} "
-            f"(validation {checkpoint_metric}={best_validation_score:.2f}%)"
+            f"(validation {selection_metric}={best_selection_score:.2f}%)"
         )
     else:
         print("\n   ⚠ Usando modelo final (no se encontró mejora)")
 
     print("Evaluando con el mejor modelo sobre test held-out...")
     test_metrics = _evaluate_loader_metrics(model, fold_test_loader, device)
+    if best_selection_metrics is None:
+        best_selection_metrics = _evaluate_loader_metrics(model, fold_validation_loader, device)
+        best_selection_score = metric_value(best_selection_metrics, selection_metric)
+    best_validation_acc = metric_value(best_selection_metrics, "accuracy")
 
     print(f"\nResultados Fold {fold_num} (usando mejor modelo de época {best_epoch}):")
     print(f"   Accuracy:     {test_metrics['accuracy']:.2f}%")
@@ -446,6 +485,11 @@ def evaluate_5fold_cross_validation(
     Returns:
         Aggregated 5-fold held-out test results dictionary or None if all folds fail.
     """
+    # The selected genome is evaluated on real data only.  Do not reuse the
+    # synthetic source used by the genetic loop, even if the caller's active
+    # dataset selector still points at it.
+    final_config = get_data_phase_config(config, 'final_evaluation')
+
     if num_epochs is None:
         num_epochs = config.get("num_epochs", 100)
     selection_metric = resolve_metric_name(config, "fold_selection_metric")
@@ -455,6 +499,10 @@ def evaluate_5fold_cross_validation(
     print("=" * 80)
 
     print("\nIMPORTANTE: validación selecciona el mejor epoch y test se reserva para reporte final:")
+    print(
+        "   - Fuente de datos: real-only "
+        f"({final_config['fold_files_subdirectory']}, {final_config['dataset_id']})"
+    )
     print(f"   - Entrena por {num_epochs} épocas por fold")
     print(f"   - Guarda el MEJOR modelo basado en {selection_metric} de validación")
     print(f"   - Aplica early stopping con patience={config.get('epoch_patience', 10)}")
@@ -492,14 +540,17 @@ def evaluate_5fold_cross_validation(
         print(f"\n\nCargando datos del Fold {fold_num}...")
 
         try:
-            fold_train_loader, fold_validation_loader, fold_test_loader = load_fold_data(config, fold_num, device=device)
+            loaders = load_fold_loaders(final_config, fold_num, device=device)
+            fold_train_loader = loaders.train
+            fold_validation_loader = loaders.validation
+            fold_test_loader = loaders.test
             print(f"   Train batches: {len(fold_train_loader)}")
             print(f"   Validation batches: {len(fold_validation_loader)}")
             print(f"   Test batches: {len(fold_test_loader)}")
 
             fold_result = evaluate_single_fold(
                 best_genome,
-                config,
+                final_config,
                 fold_train_loader,
                 fold_validation_loader,
                 fold_test_loader,
@@ -578,6 +629,12 @@ def evaluate_5fold_cross_validation(
         "selection_metric": selection_metric,
         "selection_split": "validation",
         "evaluation_split": "test",
+        "evolution_dataset_id": config.get('evolution_dataset_id', config.get('dataset_id')),
+        "evolution_fold_files_subdirectory": config.get(
+            'evolution_fold_files_subdirectory', config.get('fold_files_subdirectory')
+        ),
+        "final_dataset_id": final_config['dataset_id'],
+        "final_fold_files_subdirectory": final_config['fold_files_subdirectory'],
     }
 
     print("\n" + "=" * 80)

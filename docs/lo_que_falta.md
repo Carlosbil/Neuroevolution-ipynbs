@@ -14,7 +14,7 @@ Este documento recoge el estado del código asociado a `test.ipynb` frente a las
 - Busca arquitecturas Conv1D e hiperparámetros mediante operadores evolutivos: selección, cruce, mutación adaptativa, crecimiento incremental, trazabilidad de innovaciones y especiación.
 - Muestra la arquitectura básica del mejor genoma y las gráficas de evolución.
 
-La configuración por defecto utiliza `files_real_N`, es decir, datos reales en train, validation y test. Los escenarios que incluyen datos sintéticos deben considerarse exploratorios mientras no exista una trazabilidad verificable a nivel de sujeto.
+La configuración por defecto usa `files_syn_all_N` para entrenar y seleccionar durante todo el bucle genético. Una vez elegido el genoma, la evaluación final cambia de forma explícita a `files_real_N`: reentrena desde cero con train real, selecciona el checkpoint con validation real y mide únicamente test real.
 
 ## Correcciones metodológicas ya realizadas
 
@@ -75,9 +75,8 @@ También debe añadirse una validación automática que falle si hay solapamient
 
 El escenario reproducible y defendible para el artículo debe ser:
 
-- train: datos reales y, opcionalmente, sintéticos derivados solo de sujetos de train;
-- validation: datos reales únicamente;
-- test: datos reales únicamente.
+- evolución genética: train y validation sintéticos únicamente; test sintético no participa en la fitness;
+- evaluación final: train, validation y test reales únicamente, tras fijar el genoma ganador.
 
 Falta código para construir, validar y registrar este escenario. También faltan ejecuciones comparables de las siguientes condiciones:
 

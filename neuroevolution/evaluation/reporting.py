@@ -16,6 +16,16 @@ METRIC_COLUMNS: Sequence[tuple[str, str]] = (
 )
 
 
+def _aggregate_metric_value(results: Dict[str, Any], prefix: str, metric_key: str) -> Any:
+    """Read aggregate metrics, including the established ``mean_f1`` alias."""
+    key = f"{prefix}_{metric_key}"
+    if key in results:
+        return results[key]
+    if metric_key == "f1_score":
+        return results[f"{prefix}_f1"]
+    return results[key]
+
+
 def build_held_out_results_rows(results: Dict[str, Any]) -> List[Dict[str, Any]]:
     """Build per-fold plus aggregate rows without mixing validation metrics."""
     rows = []
@@ -26,7 +36,10 @@ def build_held_out_results_rows(results: Dict[str, Any]) -> List[Dict[str, Any]]
 
     for label, prefix in (("Mean", "mean"), ("Std", "std")):
         row = {"Fold": label}
-        row.update({metric_label: results[f"{prefix}_{metric_key}"] for metric_label, metric_key in METRIC_COLUMNS})
+        row.update({
+            metric_label: _aggregate_metric_value(results, prefix, metric_key)
+            for metric_label, metric_key in METRIC_COLUMNS
+        })
         rows.append(row)
     return rows
 

@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Neuroevolution · Flujo de ejecución</title>
+  <style>
+    :root { --bg:#0b1020; --panel:#121a30; --panel2:#19233f; --ink:#edf3ff; --muted:#aab8d8; --line:#30446f; --train:#ffad4d; --val:#62b3ff; --test:#5cda9a; --warn:#ff6b6b; --violet:#b997ff; }
+    * { box-sizing:border-box; }
+    html { scroll-behavior:smooth; }
+    body { margin:0; background:radial-gradient(circle at 8% 0%,#1d2e58 0,transparent 33rem),var(--bg); color:var(--ink); font:16px/1.55 Inter,Segoe UI,Arial,sans-serif; }
+    main { width:min(1180px,calc(100% - 32px)); margin:auto; padding:42px 0 70px; }
+    h1,h2,h3,p { margin-top:0; } h1 { font-size:clamp(2rem,5vw,3.7rem); line-height:1.05; letter-spacing:-.055em; max-width:800px; margin-bottom:17px; }
+    h2 { font-size:1.55rem; letter-spacing:-.025em; margin-bottom:12px; } h3 { font-size:1rem; margin-bottom:7px; }
+    .eyebrow { color:var(--train); font-weight:750; font-size:.75rem; letter-spacing:.13em; text-transform:uppercase; }
+    .lead { max-width:810px; font-size:1.12rem; color:var(--muted); }
+    .nav { display:flex; gap:10px; flex-wrap:wrap; margin:23px 0 34px; } .nav a,.tag { border:1px solid var(--line); border-radius:999px; padding:6px 11px; color:var(--ink); text-decoration:none; font-size:.82rem; } .nav a:hover { border-color:var(--val); color:var(--val); }
+    .notice { border:1px solid rgba(255,107,107,.65); border-left:5px solid var(--warn); border-radius:12px; background:rgba(120,31,46,.18); padding:17px 19px; margin:0 0 28px; }
+    .notice strong { color:#ffb7b7; } .notice code { color:#ffd6d6; }
+    section { margin:36px 0; } .panel { background:linear-gradient(145deg,rgba(25,35,63,.96),rgba(18,26,48,.96)); border:1px solid var(--line); border-radius:16px; padding:23px; box-shadow:0 15px 40px rgba(0,0,0,.17); }
+    .legend { display:flex; flex-wrap:wrap; gap:13px; color:var(--muted); font-size:.86rem; margin:14px 0 2px; } .dot { width:10px; height:10px; border-radius:99px; display:inline-block; margin-right:5px; }
+    .flow { display:grid; grid-template-columns:repeat(9,minmax(92px,1fr)); gap:8px; align-items:center; margin-top:21px; overflow-x:auto; padding-bottom:8px; }
+    .node { min-height:105px; min-width:110px; padding:12px; border:1px solid var(--line); background:#10182c; border-radius:12px; display:flex; flex-direction:column; justify-content:center; text-align:center; font-size:.83rem; } .node b { font-size:.91rem; } .arrow { color:#6883b8; text-align:center; font-size:1.5rem; } .accent { border-top:4px solid var(--violet); } .orange { border-top:4px solid var(--train); } .blue { border-top:4px solid var(--val); } .green { border-top:4px solid var(--test); } .danger { border-top:4px solid var(--warn); }
+    .grid { display:grid; grid-template-columns:repeat(3,1fr); gap:16px; } .grid.two { grid-template-columns:repeat(2,1fr); } .card { background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:18px; } .card p { color:var(--muted); margin-bottom:0; }
+    .step { display:grid; grid-template-columns:42px 1fr; gap:14px; padding:17px 0; border-bottom:1px solid var(--line); } .step:last-child { border-bottom:0; padding-bottom:0; } .number { color:var(--bg); background:var(--val); width:32px; height:32px; border-radius:50%; display:grid; place-items:center; font-weight:800; }
+    code { color:#d9c8ff; font-family:ui-monospace,SFMono-Regular,Consolas,monospace; font-size:.9em; } ul { padding-left:20px; margin-bottom:0; } li { margin:5px 0; } .tiny { color:var(--muted); font-size:.89rem; }
+    .split { display:grid; grid-template-columns:1fr 48px 1fr 48px 1fr; align-items:center; gap:8px; margin:19px 0 5px; } .split-box { border-radius:14px; min-height:135px; padding:18px; border:1px solid; } .split-box p { margin:5px 0 0; color:var(--muted); } .split-arrow { color:#7188bd; text-align:center; font-size:1.7rem; }
+    .architecture { display:grid; grid-template-columns:1fr 1fr 1fr; gap:14px; margin-top:18px; } .arch { padding:18px; border-radius:14px; border:1px solid var(--line); background:#10182c; } .arch h3 { display:flex; align-items:center; gap:8px; } .arch h3 span { display:inline-grid; place-items:center; border-radius:6px; width:25px; height:25px; font-size:.74rem; } .seq span { background:#574577; }.res span { background:#80551d; }.inc span { background:#17634a; }
+    .lane { border:1px dashed #536a9b; border-radius:8px; padding:8px; color:#cad6ee; margin-top:9px; font:12px/1.45 ui-monospace,SFMono-Regular,Consolas,monospace; }
+    .table { width:100%; border-collapse:collapse; margin-top:10px; font-size:.91rem; } .table th,.table td { text-align:left; padding:10px; border-bottom:1px solid var(--line); vertical-align:top; } .table th { color:var(--muted); font-weight:650; } .yes { color:var(--test); font-weight:750; } .no { color:var(--warn); font-weight:750; }
+    footer { color:var(--muted); font-size:.83rem; border-top:1px solid var(--line); padding-top:18px; margin-top:46px; }
+    @media (max-width:850px) { .grid,.grid.two,.architecture { grid-template-columns:1fr; } .flow { grid-template-columns:1fr; max-width:400px; margin:auto; } .arrow { transform:rotate(90deg); } .split { grid-template-columns:1fr; } .split-arrow { transform:rotate(90deg); } }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <div class="eyebrow">Mapa estático del repositorio · estado actual</div>
+    <h1>Cómo se ejecuta la búsqueda neuroevolutiva</h1>
+    <p class="lead">Recorrido de <code>test.ipynb</code>: el bucle genético usa ficheros sintéticos y, tras seleccionar el genoma, la evaluación final lo reentrena y mide exclusivamente con ficheros reales.</p>
+    <nav class="nav"><a href="#flujo">Flujo alto nivel</a><a href="#datos">Datos</a><a href="#pasos">Paso a paso</a><a href="#arquitecturas">Arquitecturas</a><a href="#estado">Estado actual</a></nav>
+  </header>
+
+  <aside class="notice" id="estado">
+    <strong>Importante: el flujo ya separa explícitamente la fuente de datos de cada fase.</strong>
+    <code>neuroevolution/evolution/fitness.py</code> carga los folds sintéticos para entrenar y calcular la fitness de validación durante toda la búsqueda genética. Tras fijar el mejor genoma, <code>cross_validation.py</code> cambia a los folds reales, lo reentrena desde cero, selecciona el checkpoint mediante validation real y calcula las métricas finales solo sobre test real. Los pesos del bucle genético no se reutilizan en esta evaluación final.</aside>
+
+  <section id="flujo"><div class="panel">
+    <h2>Diagrama de flujo de alto nivel</h2>
+    <div class="legend"><span><i class="dot" style="background:var(--train)"></i>entrenamiento</span><span><i class="dot" style="background:var(--val)"></i>validación / selección</span><span><i class="dot" style="background:var(--test)"></i>test retenido</span></div>
+    <div class="flow">
+      <div class="node accent"><b>test.ipynb</b><span>semilla, dispositivo y CONFIG</span></div><div class="arrow">→</div>
+      <div class="node blue"><b>Cargar 5 folds</b><span>arrays sintéticos N</span></div><div class="arrow">→</div>
+      <div class="node accent"><b>Población</b><span>genomas y topología</span></div><div class="arrow">→</div>
+      <div class="node orange"><b>Evaluar genoma</b><span>5 folds en paralelo</span></div><div class="arrow">→</div>
+      <div class="node blue"><b>Fitness</b><span>F1 de validación</span></div><div class="arrow">→</div>
+      <div class="node accent"><b>Pareto + genética</b><span>élite, cruce, mutación</span></div><div class="arrow">→</div>
+      <div class="node green"><b>5-fold final</b><span>test solo al final</span></div>
+    </div>
+    <p class="tiny" style="margin:18px 0 0">El bloque naranja contiene un bucle: por cada generación se evalúan los genomas, se ordenan por los objetivos Pareto y se crea la siguiente población hasta alcanzar el umbral o el límite de generaciones.</p>
+  </div></section>
+
+  <section id="datos">
+    <h2>Datos: train, validation y test</h2>
+    <div class="panel">
+      <p>La evolución selecciona <code>dataset_id='40_1e5_N'</code> y <code>fold_files_subdirectory='files_syn_all_N'</code>. Cuando termina la selección, la evaluación final fuerza <code>dataset_id='real_N'</code> y <code>fold_files_subdirectory='files_real_N'</code>. Así, ningún dato real interviene en el fitness genético y ningún dato sintético interviene en el reentrenamiento ni las métricas finales.</p>
+      <div class="split">
+        <div class="split-box" style="border-color:var(--train);background:rgba(255,173,77,.08)"><b style="color:var(--train)">TRAIN · 180</b><p>Optimiza los pesos del modelo en cada fold. Nunca sirve para calcular la fitness de selección directamente.</p></div><div class="split-arrow">→</div>
+        <div class="split-box" style="border-color:var(--val);background:rgba(98,179,255,.08)"><b style="color:var(--val)">VALIDATION · 60</b><p>Calcula F1 y demás métricas durante la evolución. Decide el mejor checkpoint y el fitness del genoma.</p></div><div class="split-arrow">→</div>
+        <div class="split-box" style="border-color:var(--test);background:rgba(92,218,154,.08)"><b style="color:var(--test)">TEST · 60</b><p>Debe quedar retenido. Se usa sólo por la evaluación 5-fold final del genoma ganador.</p></div>
+      </div>
+      <p class="tiny">Esto acredita separación por filas y la selección de ficheros reales. Para demostrar que no hay fuga por sujeto haría falta un manifiesto de sujetos/origen asociado a los arrays; los <code>.npy</code> no contienen esa procedencia.</p>
+    </div>
+  </section>
+
+  <section id="pasos"><h2>Paso a paso</h2><div class="panel">
+    <div class="step"><div class="number">1</div><div><h3>Preparación del notebook</h3><p>Se importan <code>CONFIG</code> y las clases principales, se fija <code>setup_seeds(42)</code>, se resuelve CUDA con <code>setup_device()</code> y se carga el dataset.</p></div></div>
+    <div class="step"><div class="number">2</div><div><h3>Configuración y límites</h3><p><code>config.py</code> valida métricas, límites de capas, topologías y plantillas. La búsqueda usa 64 individuos, hasta 250 generaciones, lotes de 128 y AMP BF16 durante el entrenamiento de fitness si CUDA está disponible.</p></div></div>
+    <div class="step"><div class="number">3</div><div><h3>Construcción de la población</h3><p><code>HybridNeuroevolution</code> crea genomas aleatorios y una fracción de plantillas. Cada genoma describe convoluciones, capas fully-connected, normalización, activaciones, dropout, optimizador, LR y una topología Conv1D.</p></div></div>
+    <div class="step"><div class="number">4</div><div><h3>Validar y materializar la arquitectura</h3><p>El validador normaliza tamaños y fuerza una única topología activa. <code>EvolvableCNN</code> traduce el genoma a módulos PyTorch y calcula su número de parámetros.</p></div></div>
+    <div class="step"><div class="number">5</div><div><h3>Evaluar un genoma en cinco folds</h3><p><code>evaluate_fitness()</code> abre un <code>ThreadPoolExecutor</code> de hasta 5 workers. En cada fold debería entrenar sólo con train, medir el checkpoint con validation y devolver métricas, tiempo y parámetros. La fitness agregada es el promedio de la métrica configurada: F1.</p></div></div>
+    <div class="step"><div class="number">6</div><div><h3>Seleccionar y reproducir</h3><p>La selección Pareto maximiza fitness y minimiza tiempo de evaluación y parámetros. Después conserva élites, forma especies y produce descendencia mediante cruce y mutación; la complejidad máxima se desbloquea de forma progresiva.</p></div></div>
+    <div class="step"><div class="number">7</div><div><h3>Repetir hasta terminar</h3><p>Se actualizan los mejores genomas y se aplican las reglas de parada por fitness, generaciones o falta de mejora. Los artefactos guardan el progreso y el candidato ganador.</p></div></div>
+    <div class="step"><div class="number">8</div><div><h3>Evaluación final retenida</h3><p><code>evaluate_5fold_cross_validation()</code> debería reconstruir el ganador, entrenarlo por fold, escoger checkpoint por validation y calcular las métricas finales exclusivamente sobre test. Actualmente este paso también está bloqueado por el error indicado arriba.</p></div></div>
+  </div></section>
+
+  <section id="arquitecturas"><h2>Cómo se crean las capas Conv1D</h2><div class="panel">
+    <p>Un genoma escoge exactamente una opción mediante <code>conv_topology_weights</code>: secuencial 0.45, residual 0.30 o inception 0.25. Las banderas residuales heredadas no se mezclan con Inception tras la validación del genoma.</p>
+    <div class="architecture">
+      <article class="arch seq"><h3><span>S</span>Secuencial</h3><div class="lane">Conv1D → Normalización → Activación → MaxPool<br>                                         ↳ Dropout opcional</div><p class="tiny">La ruta base. Una unidad por especificación convolucional.</p></article>
+      <article class="arch res"><h3><span>R</span>Residual</h3><div class="lane">x ────────────────────────┐<br>Conv1D → Norm → Act → ... ├─ suma → Act → MaxPool<br>         (1×1 proyección si cambian canales) ┘</div><p class="tiny">Agrupa 2–3 convoluciones por bloque. La conexión corta es identidad cuando coincide el canal; si no, usa proyección 1×1 automática.</p></article>
+      <article class="arch inc"><h3><span>I</span>Inception</h3><div class="lane">1×1 ──────────────────────┐<br>1×1 reduce → k pequeño ───┼→ concat → MaxPool<br>1×1 reduce → k ancho ─────┤<br>maxpool → 1×1 (opcional) ─┘</div><p class="tiny">Crea ramas en paralelo. Los canales internos siguen el ratio de reducción y se limita cada rama a un mínimo de 1 canal.</p></article>
+    </div>
+  </div></section>
+
+  <section><h2>Configuración H100 aplicada</h2><div class="grid two">
+    <article class="card"><h3>Paralelismo y memoria</h3><ul><li><code>fold_parallel_workers=5</code>: un fold por worker durante fitness.</li><li><code>fold_cache_mode='ram'</code>: mantiene folds en memoria.</li><li><code>dataloader_num_workers=0</code>: evita procesos extra sobre el caché RAM.</li><li><code>batch_size=128</code>.</li></ul></article>
+    <article class="card"><h3>Precisión y selección</h3><ul><li><code>use_amp=True</code>, <code>amp_dtype='bfloat16'</code>.</li><li>Pareto: F1 ↑, tiempo ↓, parámetros ↓.</li><li>La AMP está implementada en el entrenamiento de fitness; la evaluación final activa no usa ese mismo autocast.</li><li><code>pin_memory=True</code> se mantiene para transferencias CUDA.</li></ul></article>
+  </div></section>
+
+  <section><h2>Qué cuenta como resultado real</h2><div class="panel"><table class="table"><thead><tr><th>Fase</th><th>Datos permitidos</th><th>Uso</th><th>¿Puede influir en el diseño?</th></tr></thead><tbody>
+    <tr><td>Entrenamiento</td><td>Train</td><td>Actualizar pesos</td><td class="yes">Sí, indirectamente</td></tr>
+    <tr><td>Selección</td><td>Validation</td><td>F1, checkpoint, fitness y Pareto</td><td class="yes">Sí</td></tr>
+    <tr><td>Informe final</td><td>Test real</td><td>Métricas retenidas del ganador</td><td class="no">No debe influir</td></tr>
+  </tbody></table></div></section>
+  <footer>Generado a partir de la estructura actual del repositorio y de <code>config.py</code>. El aviso de bloqueo describe el código activo para que el diagrama no oculte el estado de ejecución real.</footer>
+</main>
+</body>
+</html>
