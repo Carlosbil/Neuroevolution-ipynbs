@@ -1,8 +1,9 @@
-"""
-Fitness evaluation module for parallel 5-fold train/validation/test evaluations.
+"""Synthetic-data fitness evaluation for parallel five-fold experiments.
 
-This module implements parallel training and validation of genomes using ThreadPoolExecutor
-to run all 5 folds simultaneously. Fitness is calculated as the average validation F1-score.
+All model fitting, checkpoint selection and internal testing in this module use
+the configured synthetic source. Fitness remains the average synthetic
+validation F1-score; the synthetic test split is reported but never used for
+selection. Real data are reserved for the separate final evaluation module.
 """
 
 import os
@@ -164,9 +165,10 @@ def _evaluate_model_on_loader(
 
 def evaluate_fitness(genome: dict, config: dict, device: torch.device) -> Tuple[float, nn.Module, dict]:
     """
-    Evalua el fitness de un genoma usando 5 particiones train/validation/test en paralelo.
+    Evalua el fitness de un genoma usando 5 particiones sinteticas en paralelo.
     Los 5 folds se entrenan en threads separados y se espera a que terminen todos.
-    El fitness final es el promedio de F1-score de validacion de los 5 folds.
+    El fitness final es el promedio de F1-score de validacion sintetica. El test
+    sintetico se registra solo como metrica interna y no participa en seleccion.
 
     Args:
         genome: Genome dictionary defining the architecture
@@ -179,7 +181,7 @@ def evaluate_fitness(genome: dict, config: dict, device: torch.device) -> Tuple[
             - model: modelo entrenado en el mejor fold (para checkpoint)
             - metrics: diccionario con metricas agregadas de todos los folds
     """
-    print(f"      Training/evaluating model {genome['id']} with PARALLEL 5-FOLD TRAIN/VALIDATION/TEST PROTOCOL")
+    print(f"      Training/evaluating model {genome['id']} with PARALLEL SYNTHETIC 5-FOLD PROTOCOL")
 
     fold_scores = {}
     fold_models = {}
@@ -296,9 +298,13 @@ def train_fold_in_thread(genome: dict, fold_num: int, config: dict, device: torc
         Tuple of (fold_num, score, model, metrics)
     """
     try:
+        if config.get('data_source', 'synthetic') != 'synthetic':
+            raise ValueError("Evolution training requires data_source='synthetic'")
+
         fold_loaders = load_fold_loaders(fold_num, config, device)
         fold_train_loader = fold_loaders.train
         fold_validation_loader = fold_loaders.validation
+        fold_synthetic_test_loader = fold_loaders.test
 
         try:
             model = EvolvableCNN(genome, config).to(device)
@@ -385,14 +391,33 @@ def train_fold_in_thread(genome: dict, fold_num: int, config: dict, device: torc
             amp_dtype,
             amp_enabled,
         )
-        metrics['selection_split'] = 'validation'
+        synthetic_test_metrics = _evaluate_model_on_loader(
+            model,
+            fold_synthetic_test_loader,
+            device,
+            autocast_device_type,
+            amp_dtype,
+            amp_enabled,
+        )
+        metrics['selection_split'] = 'synthetic_validation'
         metrics['checkpoint_metric'] = str(config.get('checkpoint_metric', config.get('fitness_metric', 'f1_score')))
+        metrics['training_data_source'] = 'synthetic'
+        metrics['selection_data_source'] = 'synthetic'
+        metrics['internal_test_data_source'] = 'synthetic'
+        metrics['internal_test_split'] = 'synthetic_test'
+        metrics['synthetic_test_metrics'] = synthetic_test_metrics
 
         print(
             f"      -> Fold {fold_num} completed: "
             f"Acc={metrics['accuracy']:.2f}%, Sen={metrics['sensitivity']:.2f}%, "
             f"Spe={metrics['specificity']:.2f}%, F1={metrics['f1_score']:.2f}%, "
             f"AUC={metrics['auc']:.2f}%"
+        )
+        print(
+            f"         Synthetic test (report only): "
+            f"Acc={synthetic_test_metrics['accuracy']:.2f}%, "
+            f"F1={synthetic_test_metrics['f1_score']:.2f}%, "
+            f"AUC={synthetic_test_metrics['auc']:.2f}%"
         )
 
         return fold_num, metrics['f1_score'], model, metrics
@@ -448,6 +473,47 @@ def load_fold_data(fold_number: int, config: dict, device: torch.device) -> Tupl
     return loaders.train, loaders.validation
 
 
+def load_fold_test_loader(fold_number: int, config: dict, device: torch.device) -> DataLoader:
+    """Load only one fold's test split.
+
+    The final synthetic-to-real evaluation uses this function for the real
+    source so real train/validation arrays are neither loaded nor exposed to
+    the training routine.
+    """
+    cache_mode = _resolve_cache_mode(config)
+    fold_files_directory = _resolve_fold_files_directory(config)
+    dataset_id = config['dataset_id']
+
+    x_test = _load_numpy_array(
+        os.path.join(fold_files_directory, f'X_test_{dataset_id}_fold_{fold_number}.npy'),
+        cache_mode,
+    )
+    y_test = _load_numpy_array(
+        os.path.join(fold_files_directory, f'y_test_{dataset_id}_fold_{fold_number}.npy'),
+        cache_mode,
+    )
+
+    if len(x_test.shape) == 2:
+        x_test = x_test.reshape((x_test.shape[0], 1, x_test.shape[1]))
+
+    test_dataset = torch.utils.data.TensorDataset(
+        torch.tensor(x_test, dtype=torch.float32),
+        torch.tensor(y_test, dtype=torch.long),
+    )
+
+    num_workers, persistent_workers, prefetch_factor, pin_memory = _resolve_dataloader_settings(config, device)
+    loader_kwargs = {
+        'batch_size': config['batch_size'],
+        'num_workers': num_workers,
+        'pin_memory': pin_memory,
+    }
+    if num_workers > 0:
+        loader_kwargs['persistent_workers'] = persistent_workers
+        loader_kwargs['prefetch_factor'] = prefetch_factor
+
+    return DataLoader(test_dataset, shuffle=False, **loader_kwargs)
+
+
 def _load_fold_data_uncached(
     fold_number: int,
     config: dict,
@@ -498,7 +564,8 @@ def _load_fold_data_uncached(
     x_test_tensor = torch.tensor(x_test, dtype=torch.float32)
     y_test_tensor = torch.tensor(y_test, dtype=torch.long)
 
-    # Crear datasets separados. Test se mantiene aislado para evaluación final.
+    # Los tres splits son sinteticos en la fase evolutiva. El test sintetico
+    # sirve solo para reporting interno; la evaluacion final usa otra fuente.
     train_dataset = torch.utils.data.TensorDataset(x_train_tensor, y_train_tensor)
     validation_dataset = torch.utils.data.TensorDataset(x_val_tensor, y_val_tensor)
     test_dataset = torch.utils.data.TensorDataset(x_test_tensor, y_test_tensor)

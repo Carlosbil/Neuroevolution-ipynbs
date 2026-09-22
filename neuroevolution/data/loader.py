@@ -8,6 +8,8 @@ from typing import Tuple
 from torch.utils.data import DataLoader, TensorDataset
 import torch
 
+from neuroevolution.config import get_final_evaluation_config
+
 
 def load_dataset(config: dict) -> None:
     """
@@ -21,9 +23,9 @@ def load_dataset(config: dict) -> None:
         FileNotFoundError: If data directory or files are missing
     """
     print("\n" + "="*60)
-    print("VERIFICANDO DISPONIBILIDAD DE DATOS")
+    print("VERIFICANDO DATOS SINTÉTICOS Y TEST FINAL REAL")
     print("="*60)
-    print(f"Dataset ID: {config['dataset_id']}, Verificando los 5 folds...")
+    print(f"Fuente de entrenamiento/test interno: synthetic ({config['dataset_id']})")
     
     # Build directory path using the configured subdirectory
     fold_files_directory = os.path.join(
@@ -113,8 +115,43 @@ def load_dataset(config: dict) -> None:
         config['sequence_length'] = x_train.shape[2]
     
     print(f"   Sequence length detected: {config['sequence_length']}")
+    final_config = get_final_evaluation_config(config)
+    final_directory = os.path.join(
+        final_config['data_path'],
+        final_config['fold_files_subdirectory'],
+    )
+    final_dataset_id = final_config['dataset_id']
+    print(f"\nVerificando test final real: {os.path.abspath(final_directory)}")
+
+    for fold_num in range(1, int(config.get('num_folds', 5)) + 1):
+        final_x_path = os.path.join(
+            final_directory,
+            f'X_test_{final_dataset_id}_fold_{fold_num}.npy',
+        )
+        final_y_path = os.path.join(
+            final_directory,
+            f'y_test_{final_dataset_id}_fold_{fold_num}.npy',
+        )
+        if not os.path.exists(final_x_path) or not os.path.exists(final_y_path):
+            raise FileNotFoundError(
+                f"Missing real final-test files for fold {fold_num}: "
+                f"{final_x_path} / {final_y_path}"
+            )
+
+    real_test_sample = np.load(
+        os.path.join(final_directory, f'X_test_{final_dataset_id}_fold_1.npy'),
+        mmap_mode='r',
+    )
+    real_sequence_length = real_test_sample.shape[-1]
+    if real_sequence_length != config['sequence_length']:
+        raise ValueError(
+            "Synthetic and real sequence lengths must match: "
+            f"synthetic={config['sequence_length']}, real={real_sequence_length}"
+        )
+
     print(f"\n✓ Dataset verification complete!")
-    print(f"   During evolution, each individual will train on all 5 folds.")
+    print("   Evolution: synthetic train/validation/test across all folds.")
+    print("   Final evaluation: real test only, with no real-data weight updates.")
     print("="*60)
 
 

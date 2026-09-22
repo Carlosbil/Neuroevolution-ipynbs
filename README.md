@@ -9,10 +9,10 @@ Proyecto de investigación para clasificación de voz en detección de Parkinson
 Este repositorio implementa un pipeline híbrido que combina:
 
 1. **Algoritmo genético** para evolucionar arquitecturas de redes Conv1D
-2. **Evaluación de fitness** con F1-score de validación en 5 particiones paralelas (ThreadPoolExecutor)
+2. **Evaluación de fitness** con F1-score de validación sintética en 5 particiones paralelas (ThreadPoolExecutor)
 3. **Entrenamiento supervisado** con técnicas adaptativas de mutación y cruce
 4. **Checkpointing dinámico** del mejor modelo global según validación durante evolución
-5. **Evaluación final held-out** sobre test con métricas completas (Accuracy, Precision, Recall, F1, AUC, matriz de confusión)
+5. **Evaluación final sintético→real**: entrenamiento/selección sintéticos y métricas finales sobre test real sin reentrenamiento real
 
 El objetivo es encontrar arquitecturas robustas para separar clases **Control vs Pathological** en señales de voz.
 
@@ -104,19 +104,18 @@ data/
 └── pretrained_40_1e5_BigVSAN_generated_*/ # Synthetic data resources
 ```
 
-**Principal**: Los archivos en `data/sets/folds_5/` contienen splits `.npy` para entrenamiento/validación/test.
-
-Para resultados de artículo, la configuración por defecto usa `files_real_N` (`dataset_id="real_N"`), que mantiene 180/60/60 muestras por fold y, por tanto, un esquema 60/20/20 por muestras con datos reales en `train`, `validation` y `test`. Los conjuntos con datos sintéticos se conservan como escenarios exploratorios hasta que exista un manifiesto de sujetos que demuestre que los sintéticos proceden solo de sujetos de entrenamiento.
+**Protocolo principal**: la configuración por defecto usa `files_syn_40_1e5_N` (`dataset_id="40_1e5_N"`) para train, validation y test internos sintéticos. Cada fold contiene 7.200/2.400/2.380 muestras balanceadas. La evaluación final carga únicamente el test real de `files_real_N` (`dataset_id="real_N"`), con 60 muestras balanceadas por fold.
 
 ### Protocolo train/validation/test
 
-Cada fold mantiene tres subconjuntos separados durante todo el pipeline:
+Cada fold sintético mantiene tres subconjuntos separados durante la búsqueda:
 
-- `train`: usado para actualizar pesos del modelo.
-- `validation`: usado para early stopping, selección de checkpoint y fitness evolutivo.
-- `test`: reservado para la evaluación final held-out, sin monitorizar entrenamiento ni seleccionar checkpoints.
+- `train` sintético: usado para actualizar pesos del modelo.
+- `validation` sintética: usada para early stopping, selección de checkpoint y fitness evolutivo.
+- `test` sintético: métrica interna informativa; no participa en selección.
+- `test` real: evaluación final de generalización; no actualiza pesos ni selecciona checkpoints.
 
-La aptitud evolutiva se calcula como el promedio del F1-score de validación a través de los folds.
+La aptitud evolutiva se calcula como el promedio del F1-score de validation sintética a través de los folds. La evaluación final reentrena la arquitectura ganadora exclusivamente con sintéticos y aplica el mejor estado al test real sin ajustes posteriores.
 
 Este protocolo no debe describirse como validación cruzada clásica salvo que se aporte un manifiesto que pruebe que cada sujeto aparece en exactamente un subconjunto de test a lo largo de las cinco particiones. En la redacción metodológica, usar "cinco particiones hold-out estratificadas por sujeto" o "protocolo de cinco folds train/validation/test" cuando no se disponga de ese manifiesto.
 
@@ -234,9 +233,12 @@ Ver `neuroevolution.get_default_config()` para lista completa.
 # En best_Audio_hybrid_neuroevolution_notebook.ipynb
 CONFIG = neuroevolution.get_default_config(info_path="artifacts/best_audio")
 CONFIG['data_path'] = "data/sets/folds_5"
-CONFIG['dataset_id'] = "real_N"  # Conjunto real-only para resultados de artículo
-CONFIG['fold_id'] = "N"
-CONFIG['fold_files_subdirectory'] = "files_real_N"
+CONFIG['dataset_id'] = "40_1e5_N"
+CONFIG['fold_id'] = "40_1e5_N"
+CONFIG['fold_files_subdirectory'] = "files_syn_40_1e5_N"
+CONFIG['final_evaluation_dataset_id'] = "real_N"
+CONFIG['final_evaluation_fold_id'] = "N"
+CONFIG['final_evaluation_fold_files_subdirectory'] = "files_real_N"
 
 # Ejecutar celdas en orden:
 # 1. Imports + setup
@@ -371,10 +373,10 @@ Una sola llamada = estado reproducible.
 
 El proyecto permite experimentar con:
 
-- **Real-only**: entrenamiento, validación y test con audios reales (`files_real_N`). Es el escenario por defecto para resultados de artículo.
+- **Synthetic-to-real (predeterminado)**: entrenamiento, validación y test internos sintéticos (`files_syn_40_1e5_N`); evaluación final exclusiva sobre test real (`files_real_N`).
 - **Synthetic-only**: entrenamiento, validación y test con datos sintéticos. Exploratorio, no válido para métricas finales reales.
 - **Mixed**: mezcla real+sintética. Exploratorio si validation/test contienen sintéticos.
-- **Generalization**: entrenar con sintéticos y testear en real. Requiere regenerar o documentar folds donde validation y test sean reales y los sintéticos procedan solo de sujetos de entrenamiento.
+- **Generalization**: es el protocolo activo. Requiere documentar la generación sintética y un manifiesto de sujetos reales para auditar independencia entre folds.
 
 Configurable vía `dataset_id`, `fold_id` y `fold_files_subdirectory` en CONFIG.
 

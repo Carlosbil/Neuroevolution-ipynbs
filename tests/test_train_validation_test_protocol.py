@@ -10,6 +10,7 @@ from neuroevolution.evolution.fitness import (
 from neuroevolution.evolution.engine import HybridNeuroevolution
 from neuroevolution.evaluation import cross_validation
 from neuroevolution.config import get_default_config
+from neuroevolution.config import get_final_evaluation_config
 
 
 def _write_fold_arrays(base_dir, dataset_id="demo", fold=1):
@@ -86,23 +87,29 @@ def test_final_evaluation_reports_held_out_test_metrics(monkeypatch):
 
     train_loader = _loader([[-1.0], [1.0]], [0, 1])
     validation_loader = _loader([[-1.0], [1.0], [1.0]], [0, 1, 1])
-    test_loader = _loader([[1.0]], [1])
+    synthetic_test_loader = _loader([[1.0]], [0])
+    real_test_loader = _loader([[1.0]], [1])
 
     result = cross_validation.evaluate_single_fold(
         best_genome={"optimizer": "sgd", "learning_rate": 0.0},
         config={"epoch_patience": 1, "improvement_threshold": 0.0},
         fold_train_loader=train_loader,
         fold_validation_loader=validation_loader,
-        fold_test_loader=test_loader,
+        fold_test_loader=synthetic_test_loader,
         fold_num=1,
         device=torch.device("cpu"),
         num_epochs=1,
+        fold_real_test_loader=real_test_loader,
     )
 
-    assert result["selection_split"] == "validation"
-    assert result["evaluation_split"] == "test"
+    assert result["training_data_source"] == "synthetic"
+    assert result["selection_split"] == "synthetic_validation"
+    assert result["internal_evaluation_split"] == "synthetic_test"
+    assert result["evaluation_split"] == "real_test"
+    assert result["final_evaluation_data_source"] == "real"
     assert result["n_samples"] == 1
     assert result["accuracy"] == 100.0
+    assert result["synthetic_test_metrics"]["accuracy"] == 0.0
 
 
 def test_checkpoint_selection_score_defaults_to_f1_score():
@@ -117,6 +124,22 @@ def test_default_config_aligns_checkpoint_and_fitness_metrics():
 
     assert config["fitness_metric"] == "f1_score"
     assert config["checkpoint_metric"] == "f1_score"
+    assert config["data_source"] == "synthetic"
+    assert config["fold_files_subdirectory"] == "files_syn_40_1e5_N"
+    assert config["final_evaluation_data_source"] == "real"
+    assert config["final_evaluation_fold_files_subdirectory"] == "files_real_N"
+
+
+def test_final_evaluation_config_switches_to_real_without_mutating_source():
+    config = get_default_config()
+
+    real_config = get_final_evaluation_config(config)
+
+    assert real_config["data_source"] == "real"
+    assert real_config["dataset_id"] == "real_N"
+    assert real_config["fold_files_subdirectory"] == "files_real_N"
+    assert config["data_source"] == "synthetic"
+    assert config["dataset_id"] == "40_1e5_N"
 
 
 def test_evolution_fitness_uses_validation_not_test(tmp_path, monkeypatch):
@@ -151,7 +174,10 @@ def test_evolution_fitness_uses_validation_not_test(tmp_path, monkeypatch):
 
     assert score == 100.0
     assert metrics["f1_score"] == 100.0
-    assert metrics["selection_split"] == "validation"
+    assert metrics["selection_split"] == "synthetic_validation"
+    assert metrics["training_data_source"] == "synthetic"
+    assert metrics["internal_test_split"] == "synthetic_test"
+    assert metrics["synthetic_test_metrics"]["f1_score"] == 0.0
 
 
 def test_global_checkpoint_records_validation_selection_metadata(tmp_path):
@@ -169,7 +195,9 @@ def test_global_checkpoint_records_validation_selection_metadata(tmp_path):
     engine.save_best_checkpoint({"id": "abc123", "fitness": 42.0}, model)
 
     checkpoint = torch.load(engine.best_checkpoint_path, map_location="cpu", weights_only=False)
-    assert checkpoint["selection_split"] == "validation"
+    assert checkpoint["selection_split"] == "synthetic_validation"
+    assert checkpoint["training_data_source"] == "synthetic"
+    assert checkpoint["final_evaluation_data_source"] == "real"
     assert checkpoint["fitness_metric"] == "f1_score"
     assert checkpoint["checkpoint_metric"] == "f1_score"
     assert checkpoint["test_evaluated"] is False

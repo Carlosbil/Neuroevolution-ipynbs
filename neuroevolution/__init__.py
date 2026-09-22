@@ -13,6 +13,7 @@ from .config import (
     ACTIVATION_FUNCTIONS,
     OPTIMIZERS,
     REQUIRED_PACKAGES,
+    get_final_evaluation_config,
     get_default_config,
     validate_config,
 )
@@ -51,6 +52,7 @@ from .evolution.fitness import (
     evaluate_fitness,
     load_fold_data,
     load_fold_loaders,
+    load_fold_test_loader,
     train_fold_in_thread,
 )
 
@@ -85,6 +87,7 @@ __all__ = [
     "ACTIVATION_FUNCTIONS",
     "OPTIMIZERS",
     "REQUIRED_PACKAGES",
+    "get_final_evaluation_config",
     "get_default_config",
     "validate_config",
     # Device and logging
@@ -126,6 +129,7 @@ __all__ = [
     "train_fold_in_thread",
     "load_fold_data",
     "load_fold_loaders",
+    "load_fold_test_loader",
     # Evaluation
     "calculate_metrics",
     "aggregate_fold_metrics",

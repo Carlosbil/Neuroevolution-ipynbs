@@ -1,8 +1,8 @@
-"""
-Final 5-fold train/validation/test evaluation utilities for the best genome.
+"""Synthetic-to-real final evaluation utilities for the best genome.
 
-This module extracts notebook evaluation logic so notebooks orchestrate calls
-without embedding training/evaluation implementations inline.
+Models are fitted and selected exclusively with synthetic train/validation
+data, reported on synthetic test, and finally evaluated on real held-out test
+data without any real-data weight updates.
 """
 
 from __future__ import annotations
@@ -18,8 +18,12 @@ import torch.nn as nn
 import torch.nn.functional as F
 from sklearn.metrics import accuracy_score, confusion_matrix, f1_score, recall_score, roc_auc_score
 
-from ..config import OPTIMIZERS
-from ..evolution.fitness import FoldLoaders, load_fold_loaders as load_fold_loaders_from_evolution
+from ..config import OPTIMIZERS, get_final_evaluation_config
+from ..evolution.fitness import (
+    FoldLoaders,
+    load_fold_loaders as load_fold_loaders_from_evolution,
+    load_fold_test_loader as load_fold_test_loader_from_evolution,
+)
 from ..models.evolvable_cnn import EvolvableCNN
 
 
@@ -71,6 +75,17 @@ def load_fold_data(
     """
     loaders = load_fold_loaders(config, fold_number, device)
     return loaders.train, loaders.test
+
+
+def load_fold_test_loader(
+    config: dict,
+    fold_number: int,
+    device: Optional[torch.device] = None,
+) -> torch.utils.data.DataLoader:
+    """Load only the test split for a source and fold."""
+    if device is None:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    return load_fold_test_loader_from_evolution(fold_number, config, device)
 
 
 def _evaluate_loader_metrics(
@@ -131,20 +146,23 @@ def evaluate_single_fold(
     fold_test_loader: torch.utils.data.DataLoader,
     fold_num: int,
     device: torch.device,
-    num_epochs: int = 100
+    num_epochs: int = 100,
+    fold_real_test_loader: Optional[torch.utils.data.DataLoader] = None,
 ) -> Dict[str, Any]:
     """
-    Train one fold with validation selection and evaluate once on held-out test.
+    Fit on synthetic data, report synthetic test and evaluate on real test.
 
     Args:
         best_genome: Best architecture genome.
         config: System configuration dictionary.
-        fold_train_loader: Fold training dataloader.
-        fold_validation_loader: Fold validation dataloader used for selection.
-        fold_test_loader: Fold held-out test dataloader used for final metrics.
+        fold_train_loader: Synthetic training dataloader.
+        fold_validation_loader: Synthetic validation dataloader used for selection.
+        fold_test_loader: Synthetic test dataloader used for internal reporting.
         fold_num: Fold number (1-5).
         device: Device to train/evaluate on.
         num_epochs: Max epochs for this fold.
+        fold_real_test_loader: Real held-out test loader. When omitted, the
+            synthetic test loader is used for backward compatibility.
 
     Returns:
         Dictionary with fold metrics and metadata.
@@ -169,8 +187,8 @@ def evaluate_single_fold(
     last_improvement_score = 0.0
     improvement_threshold = config.get("improvement_threshold", 0.01)
 
-    print(f"Entrenando por hasta {num_epochs} épocas (patience={patience})...")
-    print(f"Guardando el MEJOR modelo basado en validation {checkpoint_metric}")
+    print(f"Entrenando SOLO con datos sintéticos por hasta {num_epochs} épocas (patience={patience})...")
+    print(f"Guardando el MEJOR modelo basado en validation sintética ({checkpoint_metric})")
 
     for epoch in range(1, num_epochs + 1):
         model.train()
@@ -230,28 +248,40 @@ def evaluate_single_fold(
     else:
         print("\n   ⚠ Usando modelo final (no se encontró mejora)")
 
-    print("Evaluando con el mejor modelo sobre test held-out...")
-    test_metrics = _evaluate_loader_metrics(model, fold_test_loader, device)
+    print("Evaluando con el mejor modelo sobre test sintético (reporting interno)...")
+    synthetic_test_metrics = _evaluate_loader_metrics(model, fold_test_loader, device)
 
-    print(f"\nResultados Fold {fold_num} (usando mejor modelo de época {best_epoch}):")
-    print(f"   Accuracy:     {test_metrics['accuracy']:.2f}%")
-    print(f"   Sensitivity:  {test_metrics['sensitivity']:.2f}%")
-    print(f"   Specificity:  {test_metrics['specificity']:.2f}%")
-    print(f"   F1-Score:     {test_metrics['f1_score']:.2f}%")
-    print(f"   AUC:          {test_metrics['auc']:.2f}%")
+    final_loader = fold_real_test_loader if fold_real_test_loader is not None else fold_test_loader
+    final_data_source = "real" if fold_real_test_loader is not None else "synthetic"
+    final_evaluation_split = "real_test" if fold_real_test_loader is not None else "synthetic_test"
+    print(f"Evaluando SIN REENTRENAR sobre {final_evaluation_split}...")
+    final_metrics = _evaluate_loader_metrics(model, final_loader, device)
+
+    print(f"\nResultados finales Fold {fold_num} sobre {final_evaluation_split} (mejor época sintética {best_epoch}):")
+    print(f"   Accuracy:     {final_metrics['accuracy']:.2f}%")
+    print(f"   Sensitivity:  {final_metrics['sensitivity']:.2f}%")
+    print(f"   Specificity:  {final_metrics['specificity']:.2f}%")
+    print(f"   F1-Score:     {final_metrics['f1_score']:.2f}%")
+    print(f"   AUC:          {final_metrics['auc']:.2f}%")
 
     return {
         "fold": fold_num,
-        "accuracy": test_metrics["accuracy"],
-        "sensitivity": test_metrics["sensitivity"],
-        "specificity": test_metrics["specificity"],
-        "f1_score": test_metrics["f1_score"],
-        "auc": test_metrics["auc"],
-        "confusion_matrix": test_metrics["confusion_matrix"],
-        "n_samples": test_metrics["n_samples"],
+        "accuracy": final_metrics["accuracy"],
+        "sensitivity": final_metrics["sensitivity"],
+        "specificity": final_metrics["specificity"],
+        "f1_score": final_metrics["f1_score"],
+        "auc": final_metrics["auc"],
+        "confusion_matrix": final_metrics["confusion_matrix"],
+        "n_samples": final_metrics["n_samples"],
         "best_epoch": best_epoch,
-        "selection_split": "validation",
-        "evaluation_split": "test",
+        "training_data_source": "synthetic",
+        "selection_data_source": "synthetic",
+        "internal_test_data_source": "synthetic",
+        "final_evaluation_data_source": final_data_source,
+        "selection_split": "synthetic_validation",
+        "internal_evaluation_split": "synthetic_test",
+        "evaluation_split": final_evaluation_split,
+        "synthetic_test_metrics": synthetic_test_metrics,
         "checkpoint_metric": checkpoint_metric,
         "best_validation_score": best_validation_score,
     }
@@ -265,7 +295,7 @@ def evaluate_5fold_cross_validation(
     neuroevolution_instance=None
 ) -> Optional[Dict[str, Any]]:
     """
-    Evaluate the best architecture using five train/validation/test partitions.
+    Evaluate synthetic-to-real generalization over five paired partitions.
 
     Args:
         best_genome: Best architecture genome.
@@ -275,21 +305,22 @@ def evaluate_5fold_cross_validation(
         neuroevolution_instance: Optional HybridNeuroevolution instance to load checkpoint.
 
     Returns:
-        Aggregated 5-fold held-out test results dictionary or None if all folds fail.
+        Aggregated real held-out test results or None if all folds fail.
     """
     if num_epochs is None:
         num_epochs = config.get("num_epochs", 100)
 
     print("=" * 80)
-    print("EVALUACIÓN 5-FOLD TRAIN/VALIDATION/TEST (METODOLOGÍA CONSISTENTE)")
+    print("EVALUACIÓN FINAL 5-FOLD: ENTRENAMIENTO SINTÉTICO -> TEST REAL")
     print("=" * 80)
 
-    print("\n⚠️  IMPORTANTE: Esta evaluación usa la MISMA metodología que durante la evolución:")
-    print(f"   - Entrena por {num_epochs} épocas (igual que en evolución)")
+    print("\nPROTOCOLO DE GENERALIZACIÓN ENTRE DOMINIOS:")
+    print(f"   - Entrena por {num_epochs} épocas exclusivamente con train sintético")
     checkpoint_metric = config.get("checkpoint_metric", config.get("fitness_metric", "f1_score"))
-    print(f"   - Guarda el MEJOR modelo basado en {checkpoint_metric} de validación")
+    print(f"   - Selecciona el MEJOR modelo con {checkpoint_metric} de validation sintética")
     print(f"   - Aplica early stopping con patience={config.get('epoch_patience', 10)}")
-    print("   - Evalúa métricas finales sobre test held-out con el MEJOR modelo de validación")
+    print("   - Reporta test sintético sin usarlo para seleccionar")
+    print("   - Evalúa finalmente sobre test real SIN reentrenar con datos reales")
 
     print("\nArquitectura a evaluar:")
     print(f"   Conv1D Layers: {best_genome['num_conv_layers']}")
@@ -299,31 +330,51 @@ def evaluate_5fold_cross_validation(
     print(f"   Épocas por fold: {num_epochs}")
 
     if neuroevolution_instance is not None:
-        print("\nLa evaluación final usa la arquitectura seleccionada y entrena desde cero por fold.")
-        print("Los pesos del checkpoint evolutivo no se usan para métricas finales de test.")
+        print("\nLa evaluación final usa la arquitectura seleccionada y la reentrena desde cero con sintéticos por fold.")
+        print("Los pesos del checkpoint evolutivo no se reutilizan y ningún dato real actualiza pesos.")
     else:
-        print("\nNo se proporcionó instancia de neuroevolution, entrenando desde cero")
+        print("\nEntrenando la arquitectura desde cero con datos sintéticos por fold")
 
     fold_results = []
+    synthetic_config = dict(config)
+    real_config = get_final_evaluation_config(config)
+    synthetic_identity = (
+        os.path.abspath(synthetic_config['data_path']),
+        synthetic_config['fold_files_subdirectory'],
+        synthetic_config['dataset_id'],
+    )
+    real_identity = (
+        os.path.abspath(real_config['data_path']),
+        real_config['fold_files_subdirectory'],
+        real_config['dataset_id'],
+    )
+    if synthetic_identity == real_identity:
+        raise ValueError(
+            "Final evaluation must use a distinct real dataset source; "
+            "synthetic and real configurations currently resolve to the same files."
+        )
 
     for fold_num in range(1, 6):
-        print(f"\n\nCargando datos del Fold {fold_num}...")
+        print(f"\n\nCargando fuentes sintética y real del Fold {fold_num}...")
 
         try:
-            fold_loaders = load_fold_loaders(config, fold_num, device=device)
-            print(f"   Train batches: {len(fold_loaders.train)}")
-            print(f"   Validation batches: {len(fold_loaders.validation)}")
-            print(f"   Test batches: {len(fold_loaders.test)}")
+            synthetic_loaders = load_fold_loaders(synthetic_config, fold_num, device=device)
+            real_test_loader = load_fold_test_loader(real_config, fold_num, device=device)
+            print(f"   Synthetic train batches: {len(synthetic_loaders.train)}")
+            print(f"   Synthetic validation batches: {len(synthetic_loaders.validation)}")
+            print(f"   Synthetic test batches: {len(synthetic_loaders.test)}")
+            print(f"   Real final-test batches: {len(real_test_loader)}")
 
             fold_result = evaluate_single_fold(
                 best_genome,
-                config,
-                fold_loaders.train,
-                fold_loaders.validation,
-                fold_loaders.test,
+                synthetic_config,
+                synthetic_loaders.train,
+                synthetic_loaders.validation,
+                synthetic_loaders.test,
                 fold_num,
                 device=device,
                 num_epochs=num_epochs,
+                fold_real_test_loader=real_test_loader,
             )
             fold_results.append(fold_result)
 
@@ -336,7 +387,7 @@ def evaluate_5fold_cross_validation(
             continue
 
     print("\n\n" + "=" * 80)
-    print("RESULTADOS AGREGADOS (5-FOLD TEST HELD-OUT)")
+    print("RESULTADOS AGREGADOS (5-FOLD TEST REAL, SIN ENTRENAMIENTO REAL)")
     print("=" * 80)
 
     if not fold_results:
@@ -363,6 +414,26 @@ def evaluate_5fold_cross_validation(
 
     mean_auc = np.mean(aucs)
     std_auc = np.std(aucs)
+
+    synthetic_test_results = [
+        result["synthetic_test_metrics"]
+        for result in fold_results
+        if result.get("synthetic_test_metrics")
+    ]
+    synthetic_test_summary = None
+    if synthetic_test_results:
+        synthetic_test_summary = {
+            "mean_accuracy": np.mean([m["accuracy"] for m in synthetic_test_results]),
+            "std_accuracy": np.std([m["accuracy"] for m in synthetic_test_results]),
+            "mean_sensitivity": np.mean([m["sensitivity"] for m in synthetic_test_results]),
+            "std_sensitivity": np.std([m["sensitivity"] for m in synthetic_test_results]),
+            "mean_specificity": np.mean([m["specificity"] for m in synthetic_test_results]),
+            "std_specificity": np.std([m["specificity"] for m in synthetic_test_results]),
+            "mean_f1": np.mean([m["f1_score"] for m in synthetic_test_results]),
+            "std_f1": np.std([m["f1_score"] for m in synthetic_test_results]),
+            "mean_auc": np.mean([m["auc"] for m in synthetic_test_results]),
+            "std_auc": np.std([m["auc"] for m in synthetic_test_results]),
+        }
 
     print("\nRESULTADOS POR FOLD:")
     print(f"{'Fold':<6} {'Accuracy':<12} {'Sensitivity':<14} {'Specificity':<14} {'F1-Score':<12} {'AUC':<12} {'Best Epoch':<12}")
@@ -393,8 +464,19 @@ def evaluate_5fold_cross_validation(
         "n_folds": len(fold_results),
         "architecture": f"{best_genome['num_conv_layers']}Conv1D+{best_genome['num_fc_layers']}FC",
         "num_epochs_used": num_epochs,
-        "selection_split": "validation",
-        "evaluation_split": "test",
+        "training_data_source": "synthetic",
+        "selection_data_source": "synthetic",
+        "internal_test_data_source": "synthetic",
+        "final_evaluation_data_source": "real",
+        "training_dataset_id": synthetic_config.get("dataset_id"),
+        "training_fold_files_subdirectory": synthetic_config.get("fold_files_subdirectory"),
+        "final_evaluation_dataset_id": real_config.get("dataset_id"),
+        "final_evaluation_fold_files_subdirectory": real_config.get("fold_files_subdirectory"),
+        "selection_split": "synthetic_validation",
+        "internal_evaluation_split": "synthetic_test",
+        "evaluation_split": "real_test",
+        "real_data_used_for_weight_updates": False,
+        "synthetic_test_summary": synthetic_test_summary,
     }
 
     print("\n" + "=" * 80)
@@ -435,7 +517,7 @@ def evaluate_5fold_cross_validation(
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     artifacts_dir = config.get("artifacts_dir", "artifacts/test_audio")
     os.makedirs(artifacts_dir, exist_ok=True)
-    results_file = os.path.join(artifacts_dir, f"5fold_cv_results_{timestamp}.json")
+    results_file = os.path.join(artifacts_dir, f"synthetic_to_real_5fold_results_{timestamp}.json")
     results["results_path"] = results_file
 
     try:

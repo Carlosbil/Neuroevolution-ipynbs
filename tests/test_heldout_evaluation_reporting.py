@@ -52,6 +52,11 @@ def test_final_evaluation_persists_json_in_artifacts_with_provenance(tmp_path, m
         "load_fold_loaders",
         lambda *args, **kwargs: SimpleNamespace(train=[], validation=[], test=[]),
     )
+    monkeypatch.setattr(
+        cross_validation,
+        "load_fold_test_loader",
+        lambda *args, **kwargs: [],
+    )
     calls = {"fold": 0}
 
     def fake_evaluate_single_fold(*args, **kwargs):
@@ -67,20 +72,36 @@ def test_final_evaluation_persists_json_in_artifacts_with_provenance(tmp_path, m
             "optimizer": "sgd",
             "learning_rate": 0.01,
         },
-        config={"artifacts_dir": str(tmp_path), "num_epochs": 1},
+        config={
+            "artifacts_dir": str(tmp_path),
+            "num_epochs": 1,
+            "data_path": str(tmp_path),
+            "dataset_id": "synthetic_demo",
+            "fold_id": "synthetic_demo",
+            "fold_files_subdirectory": "synthetic",
+            "final_evaluation_dataset_id": "real_demo",
+            "final_evaluation_fold_id": "real_demo",
+            "final_evaluation_fold_files_subdirectory": "real",
+        },
         device=torch.device("cpu"),
     )
 
     assert result is not None
-    assert result["selection_split"] == "validation"
-    assert result["evaluation_split"] == "test"
+    assert result["selection_split"] == "synthetic_validation"
+    assert result["internal_evaluation_split"] == "synthetic_test"
+    assert result["evaluation_split"] == "real_test"
+    assert result["training_data_source"] == "synthetic"
+    assert result["final_evaluation_data_source"] == "real"
+    assert result["real_data_used_for_weight_updates"] is False
     result_path = Path(result["results_path"])
     assert result_path.parent == tmp_path
     assert result_path.is_file()
 
     serialized = json.loads(result_path.read_text(encoding="utf-8"))
-    assert serialized["selection_split"] == "validation"
-    assert serialized["evaluation_split"] == "test"
+    assert serialized["selection_split"] == "synthetic_validation"
+    assert serialized["evaluation_split"] == "real_test"
+    assert serialized["training_dataset_id"] == "synthetic_demo"
+    assert serialized["final_evaluation_dataset_id"] == "real_demo"
     assert serialized["fold_results"][0]["confusion_matrix"] == [[4, 1], [1, 4]]
 
 
@@ -97,6 +118,6 @@ def test_reporting_builds_complete_rows_and_one_plot_per_fold():
     figure = plot_fold_confusion_matrices(results)
     assert len(figure.axes) >= 2
     assert [axis.get_title() for axis in figure.axes[:2]] == [
-        "Fold 1 — held-out test",
-        "Fold 2 — held-out test",
+        "Fold 1 — real held-out test",
+        "Fold 2 — real held-out test",
     ]

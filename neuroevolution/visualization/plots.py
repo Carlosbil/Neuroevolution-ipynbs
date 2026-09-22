@@ -10,7 +10,6 @@ Provides functions to visualize:
 
 import numpy as np
 import matplotlib.pyplot as plt
-import seaborn as sns
 
 
 def plot_fitness_evolution(neuroevolution, config: dict = None):
@@ -206,4 +205,14 @@ def analyze_failed_evaluations(neuroevolution):
 def configure_plot_style():
     """Configure matplotlib and seaborn style for consistent plots."""
     plt.style.use('default')
-    sns.set_palette("husl")
+    # Seaborn is optional for core training/testing. Import it lazily so a
+    # plotting dependency cannot prevent the neuroevolution package or tests
+    # from loading in minimal environments.
+    try:
+        import seaborn as sns
+
+        sns.set_palette("husl")
+    except Exception:
+        plt.rcParams["axes.prop_cycle"] = plt.cycler(
+            color=["#1f77b4", "#d62728", "#2ca02c", "#9467bd", "#ff7f0e"]
+        )

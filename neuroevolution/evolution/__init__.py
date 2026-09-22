@@ -7,6 +7,7 @@ from .fitness import (
     evaluate_fitness,
     load_fold_data,
     load_fold_loaders,
+    load_fold_test_loader,
     train_fold_in_thread,
 )
 
@@ -17,5 +18,6 @@ __all__ = [
     'evaluate_fitness',
     'train_fold_in_thread',
     'load_fold_data',
-    'load_fold_loaders'
+    'load_fold_loaders',
+    'load_fold_test_loader'
 ]

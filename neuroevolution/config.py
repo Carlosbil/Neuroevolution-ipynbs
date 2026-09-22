@@ -30,6 +30,34 @@ def get_optimizers() -> dict:
     }
 
 
+def get_final_evaluation_config(config: dict) -> dict:
+    """Return a copy configured for the real-data final evaluation source.
+
+    Evolution and all weight fitting use the primary ``data_*`` keys. The
+    final evaluation source is deliberately namespaced so real samples cannot
+    be selected accidentally during architecture search.
+    """
+    final_config = dict(config)
+    final_config['data_path'] = config.get(
+        'final_evaluation_data_path',
+        config['data_path'],
+    )
+    final_config['dataset_id'] = config.get(
+        'final_evaluation_dataset_id',
+        config['dataset_id'],
+    )
+    final_config['fold_id'] = config.get(
+        'final_evaluation_fold_id',
+        config.get('fold_id', final_config['dataset_id']),
+    )
+    final_config['fold_files_subdirectory'] = config.get(
+        'final_evaluation_fold_files_subdirectory',
+        config['fold_files_subdirectory'],
+    )
+    final_config['data_source'] = config.get('final_evaluation_data_source', 'real')
+    return final_config
+
+
 def get_default_config(info_path: str = None) -> dict:
     """
     Returns default configuration dictionary for neuroevolution.
@@ -139,14 +167,20 @@ def get_default_config(info_path: str = None) -> dict:
         'artifact_dir': info_path,
         'artifacts_dir': info_path,
         
-        # Article-safe default: real-only 60/20/20 fold files.
-        # Synthetic fold variants are exploratory unless a subject manifest proves
-        # that validation/test subjects never contribute synthetic training data.
-        'dataset_id': 'real_N',
-        'fold_id': 'N',
+        # Domain-generalization protocol:
+        # - architecture search, fitting, validation and internal test: synthetic
+        # - final evaluation only: real held-out test
+        'data_source': 'synthetic',
+        'dataset_id': '40_1e5_N',
+        'fold_id': '40_1e5_N',
         'num_folds': 5,
         'data_path': os.path.join('data', 'sets', 'folds_5'),
-        'fold_files_subdirectory': 'files_real_N',
+        'fold_files_subdirectory': 'files_syn_40_1e5_N',
+        'final_evaluation_data_source': 'real',
+        'final_evaluation_dataset_id': 'real_N',
+        'final_evaluation_fold_id': 'N',
+        'final_evaluation_data_path': os.path.join('data', 'sets', 'folds_5'),
+        'final_evaluation_fold_files_subdirectory': 'files_real_N',
         'normalization': {'mean': (0.0,), 'std': (1.0,)}
     }
 
@@ -194,6 +228,20 @@ def validate_config(config: dict) -> None:
         raise ValueError("num_classes must be at least 2")
     if config['batch_size'] < 1:
         raise ValueError("batch_size must be at least 1")
+
+    # Data-source separation for synthetic-to-real evaluation
+    if config.get('data_source', 'synthetic') != 'synthetic':
+        raise ValueError("The primary evolution data_source must be 'synthetic'")
+    if config.get('final_evaluation_data_source', 'real') != 'real':
+        raise ValueError("final_evaluation_data_source must be 'real'")
+    for key in (
+        'dataset_id',
+        'fold_files_subdirectory',
+        'final_evaluation_dataset_id',
+        'final_evaluation_fold_files_subdirectory',
+    ):
+        if not str(config.get(key, '')).strip():
+            raise ValueError(f"{key} must be configured")
 
     # Performance-related parameters
     if int(config.get('validation_frequency_epochs', 1)) < 1:

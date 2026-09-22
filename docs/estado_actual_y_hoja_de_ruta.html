@@ -1,0 +1,1162 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <meta name="description" content="Informe técnico para tutoría doctoral: estado actual, metodología, limitaciones y hoja de ruta del proyecto Neuroevolution-ipynbs.">
+  <title>Neuroevolution-ipynbs · Informe técnico para tutoría doctoral</title>
+  <style>
+    :root {
+      --bg: #f2f1ed;
+      --panel: #ffffff;
+      --panel-2: #f5f6f7;
+      --text: #202a35;
+      --muted: #5c6875;
+      --line: #cdd2d7;
+      --cyan: #1f4f78;
+      --blue: #315f88;
+      --green: #35694f;
+      --amber: #8b6420;
+      --red: #8a3942;
+      --purple: #665078;
+      --shadow: 0 8px 24px rgba(28, 39, 49, .07);
+      --radius: 7px;
+      --mono: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+      --sans: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      --serif: Georgia, Cambria, "Times New Roman", serif;
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      color: var(--text);
+      background: linear-gradient(90deg, #ebe9e3 0, var(--bg) 18rem, var(--bg) 100%);
+      font-family: var(--sans);
+      line-height: 1.62;
+    }
+    a { color: var(--cyan); text-underline-offset: 3px; }
+    a:hover { color: white; }
+    code, pre { font-family: var(--mono); }
+    code {
+      padding: .12rem .35rem;
+      border: 1px solid #d7dde2;
+      border-radius: 3px;
+      background: #f0f3f6;
+      color: #243b53;
+    }
+    pre {
+      overflow: auto;
+      margin: 1rem 0;
+      padding: 1rem 1.1rem;
+      border: 1px solid #cbd2d8;
+      border-radius: 4px;
+      background: #f6f7f8;
+      color: #24313d;
+      line-height: 1.5;
+      tab-size: 2;
+    }
+    pre code { padding: 0; border: 0; background: transparent; color: inherit; }
+    h1, h2, h3, h4 { font-family: var(--serif); line-height: 1.2; letter-spacing: -.012em; }
+    h2 { margin-top: 0; padding-bottom: .45rem; border-bottom: 1px solid var(--line); font-size: clamp(1.4rem, 2vw, 1.85rem); color: #173b5b; }
+    h3 { margin-top: 1.8rem; color: #273c4e; }
+    h4 { color: #315773; }
+    p { margin: .72rem 0; }
+    ul, ol { padding-left: 1.35rem; }
+    li + li { margin-top: .35rem; }
+    strong { color: #172f43; }
+
+    .skip-link {
+      position: fixed; top: .75rem; left: .75rem; z-index: 99;
+      transform: translateY(-180%); padding: .65rem .9rem;
+      border-radius: 4px; background: white; color: #172a3a;
+    }
+    .skip-link:focus { transform: none; }
+    .shell { display: grid; grid-template-columns: 280px minmax(0, 1fr); min-height: 100vh; }
+    aside {
+      position: sticky; top: 0; height: 100vh; overflow: auto;
+      padding: 1.3rem 1rem; border-right: 1px solid var(--line);
+      background: rgba(248, 247, 243, .97);
+    }
+    .brand { display: flex; align-items: center; gap: .7rem; margin: .2rem .35rem 1.15rem; }
+    .brand-mark {
+      display: grid; place-items: center; width: 38px; height: 38px;
+      border-radius: 3px; background: #173f62;
+      color: white; font-family: var(--serif); font-weight: 700; box-shadow: none;
+    }
+    .brand small { display: block; color: var(--muted); }
+    nav a {
+      display: block; padding: .42rem .55rem; margin: .08rem 0;
+      border-radius: 8px; color: var(--muted); text-decoration: none; font-size: .9rem;
+    }
+    nav a:hover, nav a.active { background: #e4e8eb; color: #173f62; }
+    .aside-note {
+      margin-top: 1.2rem; padding: .8rem; border: 1px solid var(--line);
+      border-radius: 10px; color: var(--muted); font-size: .8rem;
+    }
+    main { width: min(1200px, 100%); padding: 2.2rem clamp(1rem, 3.2vw, 3rem) 5rem; }
+    .hero {
+      position: relative; overflow: hidden; padding: clamp(1.5rem, 4vw, 3rem);
+      border: 1px solid #bfc6cc; border-top: 6px solid #173f62; border-radius: var(--radius);
+      background: #ffffff;
+      box-shadow: var(--shadow);
+    }
+    .hero::after {
+      content: ""; position: absolute; right: 0; top: 0; width: 32%; height: 6px;
+      background: #7b3944;
+    }
+    .eyebrow { color: #7b3944; font: 700 .76rem/1.35 var(--sans); text-transform: uppercase; letter-spacing: .1em; }
+    .hero h1 { max-width: 900px; margin: .8rem 0 1rem; font-size: clamp(2rem, 4.2vw, 3.65rem); color: #183b59; }
+    .hero .lead { max-width: 880px; color: #4f5d6a; font-family: var(--serif); font-size: clamp(1rem, 1.4vw, 1.16rem); }
+    .meta, .chips { display: flex; flex-wrap: wrap; gap: .55rem; margin-top: 1.25rem; }
+    .chip, .status {
+      display: inline-flex; align-items: center; gap: .38rem; padding: .32rem .62rem;
+      border: 1px solid #cbd1d6; border-radius: 3px; background: #f5f6f7;
+      color: #354552; font-size: .76rem; font-weight: 650;
+    }
+    .status::before { content: ""; width: .52rem; height: .52rem; border-radius: 50%; background: currentColor; }
+    .ok { color: var(--green); }
+    .partial { color: var(--amber); }
+    .missing { color: var(--red); }
+    .planned { color: var(--purple); }
+    section {
+      margin-top: 1.15rem; padding: clamp(1.25rem, 3vw, 2rem);
+      border: 1px solid var(--line); border-radius: var(--radius);
+      background: #ffffff;
+      box-shadow: var(--shadow);
+      scroll-margin-top: 1rem;
+    }
+    .section-intro { max-width: 900px; color: var(--muted); }
+    .grid { display: grid; gap: 1rem; }
+    .grid.two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .grid.three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .grid.four { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+    .card {
+      padding: 1rem; border: 1px solid var(--line); border-radius: 5px;
+      background: #f8f8f7;
+    }
+    .card h3, .card h4 { margin-top: 0; }
+    .metric { font-family: var(--serif); font-size: 1.8rem; font-weight: 700; color: #173f62; }
+    .metric-label { color: var(--muted); font-size: .82rem; }
+    .callout {
+      margin: 1rem 0; padding: .9rem 1rem; border-left: 4px solid var(--blue);
+      border-radius: 0 4px 4px 0; background: #f1f5f8;
+    }
+    .callout.warn { border-left-color: var(--amber); background: #fbf7ed; }
+    .callout.danger { border-left-color: var(--red); background: #fbf2f3; }
+    .callout.good { border-left-color: var(--green); background: #f0f6f2; }
+    .table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 4px; }
+    table { width: 100%; border-collapse: collapse; min-width: 660px; background: #ffffff; }
+    th, td { padding: .75rem .85rem; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+    th { position: sticky; top: 0; background: #e9edf0; color: #243746; font-size: .76rem; letter-spacing: .035em; text-transform: uppercase; }
+    tr:last-child td { border-bottom: 0; }
+    tbody tr:nth-child(even) { background: #fafafa; }
+    tbody tr:hover { background: #f2f5f7; }
+    .flow {
+      display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: .7rem;
+      margin: 1.1rem 0;
+    }
+    .flow > div {
+      position: relative; min-height: 105px; padding: .85rem;
+      border: 1px solid var(--line); border-radius: 5px; background: #f7f8f8;
+    }
+    .flow > div:not(:last-child)::after {
+      content: "→"; position: absolute; top: 37%; right: -.62rem; z-index: 2;
+      width: 1.2rem; height: 1.2rem; display: grid; place-items: center;
+      border-radius: 50%; background: white; color: var(--cyan); font-weight: 900;
+    }
+    .step { color: var(--cyan); font: 800 .72rem/1 var(--mono); }
+    .flow strong { display: block; margin: .42rem 0 .25rem; }
+    .flow small { color: var(--muted); }
+    .timeline { position: relative; margin-left: .6rem; padding-left: 1.6rem; border-left: 2px solid var(--line); }
+    .phase { position: relative; margin: 0 0 1.2rem; padding: 1rem; border: 1px solid var(--line); border-radius: 5px; background: #f8f8f7; }
+    .phase::before { content: ""; position: absolute; left: -2.08rem; top: 1.3rem; width: .78rem; height: .78rem; border-radius: 50%; background: var(--purple); box-shadow: 0 0 0 5px var(--bg); }
+    .phase h3 { margin: 0 0 .55rem; }
+    .phase .deliverable { color: var(--green); }
+    details { margin: .8rem 0; border: 1px solid var(--line); border-radius: 4px; background: #fafafa; }
+    summary { cursor: pointer; padding: .8rem 1rem; font-weight: 700; color: #293d4d; }
+    details > div { padding: 0 1rem 1rem; color: #4c5b67; }
+    .diagram { width: 100%; min-width: 680px; height: auto; }
+    .diagram text { font-family: var(--sans); fill: var(--text); }
+    .diagram .muted { fill: var(--muted); }
+    .diagram .node { fill: #f6f7f7; stroke: #718392; stroke-width: 1.5; }
+    .diagram .accent { fill: #edf3f7; stroke: #315f88; stroke-width: 1.5; }
+    .diagram .arrow { stroke: #315f88; stroke-width: 2; fill: none; marker-end: url(#arrow); }
+    .mini { font-size: .86rem; color: var(--muted); }
+    .file-tree { columns: 2; column-gap: 2rem; }
+    .file-tree li { break-inside: avoid; }
+    .kbd { font-family: var(--mono); font-size: .8rem; }
+    footer { padding: 2rem .4rem; color: var(--muted); text-align: center; font-size: .85rem; }
+    .top-link { display: inline-block; margin-top: 1rem; font-size: .85rem; }
+
+    @media (max-width: 980px) {
+      .shell { display: block; }
+      aside { position: static; width: 100%; height: auto; border-right: 0; border-bottom: 1px solid var(--line); }
+      nav { display: flex; overflow-x: auto; gap: .25rem; padding-bottom: .4rem; }
+      nav a { flex: 0 0 auto; }
+      .aside-note { display: none; }
+      .grid.three, .grid.four { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .flow { grid-template-columns: 1fr; }
+      .flow > div:not(:last-child)::after { content: "↓"; top: auto; right: 50%; bottom: -.65rem; }
+    }
+    @media (max-width: 660px) {
+      main { padding: 1rem .7rem 3rem; }
+      .grid.two, .grid.three, .grid.four { grid-template-columns: 1fr; }
+      .file-tree { columns: 1; }
+      .hero { border-radius: 16px; }
+      section { padding: 1rem; }
+    }
+    @media print {
+      :root { --bg: white; --panel: white; --panel-2: #f4f6f8; --text: #182331; --muted: #52606f; --line: #cfd7df; }
+      body { background: white; font-size: 10.5pt; }
+      aside, .top-link, .skip-link { display: none; }
+      .shell { display: block; }
+      main { width: 100%; padding: 0; }
+      .hero, section { box-shadow: none; break-inside: avoid-page; background: white; }
+      .hero::after { display: none; }
+      a { color: inherit; text-decoration: none; }
+      pre { white-space: pre-wrap; background: #f6f8fa; color: #182331; }
+      th { background: #eef2f6; color: #182331; }
+      code { background: #eef2f6; color: #182331; }
+    }
+  </style>
+</head>
+<body id="top">
+  <a class="skip-link" href="#contenido">Saltar al contenido</a>
+  <div class="shell">
+    <aside aria-label="Navegación del documento">
+      <div class="brand">
+        <div class="brand-mark">N</div>
+        <div><strong>Neuroevolution</strong><small>Auditoría técnica · 2026</small></div>
+      </div>
+      <nav id="toc">
+        <a href="#historia">Origen y evolución</a>
+        <a href="#resumen">1. Resumen</a>
+        <a href="#evidencia">2. Evidencia verificada</a>
+        <a href="#mapa">3. Mapa del proyecto</a>
+        <a href="#datos">4. Datos y protocolo</a>
+        <a href="#individuo">5. Qué es un individuo</a>
+        <a href="#formacion">6. Cómo se forman</a>
+        <a href="#modelo">7. Genoma → modelo</a>
+        <a href="#fitness">8. Entrenamiento y fitness</a>
+        <a href="#evolucion">9. Ciclo evolutivo</a>
+        <a href="#operadores">10. Operadores genéticos</a>
+        <a href="#ejecucion">11. Ejecución y artefactos</a>
+        <a href="#estado">12. Estado real</a>
+        <a href="#riesgos">13. Riesgos y deuda</a>
+        <a href="#objetivo">14. Arquitectura objetivo</a>
+        <a href="#roadmap">15. Hoja de ruta</a>
+        <a href="#pruebas">16. Pruebas de aceptación</a>
+        <a href="#experimentos">17. Plan experimental</a>
+        <a href="#prioridades">18. Prioridades</a>
+        <a href="#glosario">19. Glosario</a>
+      </nav>
+      <div class="aside-note">
+        Documento autocontenido. Se puede abrir sin servidor, imprimir a PDF y navegar con el índice lateral.
+      </div>
+    </aside>
+
+    <main id="contenido">
+      <header class="hero">
+        <div class="eyebrow">Documento de trabajo para tutoría doctoral · estado verificable · plan de investigación</div>
+        <h1>Neuroevolución de arquitecturas Conv1D para clasificación de voz</h1>
+        <p class="lead">
+          Informe técnico del proyecto tal como está en el repositorio: problema de investigación, metodología implementada,
+          formación y evaluación de individuos, limitaciones actuales y hoja de ruta para incorporar bloques residuales,
+          módulos Inception y arquitecturas conocidas con un protocolo experimental defendible.
+        </p>
+        <div class="meta">
+          <span class="chip">Auditoría: 22/09/2026</span>
+          <span class="chip">Commit: <code>6c1b188</code></span>
+          <span class="chip">Paquete: <code>neuroevolution 0.1.0</code></span>
+          <span class="chip">Objetivo: Control vs Pathological</span>
+          <span class="chip">Madurez: prototipo de investigación</span>
+        </div>
+        <div class="chips" aria-label="Resumen de estado">
+          <span class="status ok">Pipeline Conv1D activo</span>
+          <span class="status ok">Entrenamiento y test sintéticos</span>
+          <span class="status ok">Evaluación final real</span>
+          <span class="status partial">NEAT-like parcial</span>
+          <span class="status missing">Residual no implementado</span>
+          <span class="status missing">Inception no implementado</span>
+          <span class="status planned">Arquitecturas conocidas planificadas</span>
+        </div>
+      </header>
+
+      <section id="historia">
+        <h2>Origen y evolución del proyecto</h2>
+        <p class="section-intro">
+          El sistema actual no surgió como una implementación cerrada, sino como una sucesión de decisiones motivadas por dos
+          restricciones constantes: el elevado coste de entrenar muchas arquitecturas y las limitaciones operativas del entorno
+          universitario. Esta sección reconstruye ese recorrido y sitúa cada decisión técnica dentro de su contexto.
+        </p>
+        <div class="callout">
+          <strong>Nota de trazabilidad histórica:</strong> la etapa Docker/Kafka y las primeras versiones monolíticas se describen a
+          partir de la evolución del proyecto comunicada por su autor. El checkout actual contiene la solución modular basada en
+          Python/notebook, no la infraestructura distribuida original.
+        </div>
+
+        <div class="timeline">
+          <article class="phase">
+            <h3>Etapa 1 · Del diseño manual al generador paramétrico</h3>
+            <p>
+              El punto de partida fue sustituir el diseño manual de una única red por un <strong>generador de arquitecturas</strong>.
+              Una arquitectura dejó de representarse como código fijo y pasó a describirse mediante un conjunto de parámetros.
+              En el algoritmo evolutivo, esos parámetros actúan como <strong>genes</strong>; el conjunto completo constituye el
+              <strong>genoma</strong> del individuo, y la red PyTorch construida a partir de él es su fenotipo.
+            </p>
+            <p>
+              Este cambio permitió crear automáticamente muchas CNN 1D diferentes, entrenarlas, medir su aptitud y emplear
+              selección, cruce y mutación para producir nuevas alternativas. La pregunta dejó de ser «¿qué red debemos diseñar?»
+              y pasó a ser «¿qué espacio de arquitecturas debe explorar el proceso evolutivo?».
+            </p>
+          </article>
+
+          <article class="phase">
+            <h3>Etapa 2 · Qué representa un gen de arquitectura</h3>
+            <p>En la implementación actual, los genes se agrupan en tres niveles:</p>
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th>Familia</th><th>Genes</th><th>Función dentro de la red</th></tr></thead>
+                <tbody>
+                  <tr><td>Estructura convolucional</td><td><code>num_conv_layers</code>, <code>filters</code>, <code>kernel_sizes</code></td><td>Determinan profundidad, canales y campo receptivo de la extracción de características.</td></tr>
+                  <tr><td>Estructura densa</td><td><code>num_fc_layers</code>, <code>fc_nodes</code></td><td>Determinan la profundidad y anchura del clasificador final.</td></tr>
+                  <tr><td>Operación de las capas</td><td><code>activations</code>, <code>normalization_type</code>, <code>dropout_rate</code></td><td>Controlan no linealidad, normalización y regularización. Actualmente las activaciones evolucionan en la ruta Conv y las FC usan ReLU fija.</td></tr>
+                  <tr><td>Entrenamiento</td><td><code>optimizer</code>, <code>learning_rate</code></td><td>Definen cómo aprende cada individuo durante su evaluación.</td></tr>
+                  <tr><td>Estado evolutivo</td><td><code>fitness</code>, <code>id</code>, <code>innovation_genes</code>, <code>structural_history</code></td><td>No describen directamente una capa; identifican, evalúan y trazan el linaje del individuo.</td></tr>
+                </tbody>
+              </table>
+            </div>
+            <p>
+              Así, dos individuos pueden compartir la misma profundidad y diferir en filtros, kernels, normalización u optimizador.
+              La evolución puede alterar tanto la topología como los hiperparámetros de aprendizaje.
+            </p>
+          </article>
+
+          <article class="phase">
+            <h3>Etapa 3 · Primer intento de escalado: Docker y Kafka</h3>
+            <p>
+              Dado que cada individuo necesita un entrenamiento completo, el primer enfoque para reducir el tiempo total fue un
+              sistema distribuido. La idea consistía en desacoplar la generación de genomas de su evaluación: un coordinador
+              publicaría trabajos en Kafka y múltiples workers encapsulados con Docker entrenarían arquitecturas en paralelo.
+            </p>
+            <div class="flow" aria-label="Arquitectura distribuida histórica con Docker y Kafka">
+              <div><span class="step">01</span><strong>Coordinador</strong><small>Genera individuos y serializa genomas.</small></div>
+              <div><span class="step">02</span><strong>Kafka</strong><small>Cola de trabajos pendientes.</small></div>
+              <div><span class="step">03</span><strong>Workers Docker</strong><small>Entrenamientos independientes en paralelo.</small></div>
+              <div><span class="step">04</span><strong>Resultados</strong><small>Fitness y métricas vuelven al coordinador.</small></div>
+              <div><span class="step">05</span><strong>Evolución</strong><small>Selección, cruce y siguiente generación.</small></div>
+            </div>
+            <p>
+              Conceptualmente, este diseño permitía aumentar el rendimiento añadiendo tantos workers como recursos estuvieran
+              disponibles. También separaba de forma limpia la lógica evolutiva de la ejecución de los entrenamientos.
+            </p>
+          </article>
+
+          <article class="phase">
+            <h3>Etapa 4 · Restricción institucional y migración al notebook</h3>
+            <p>
+              La infraestructura distribuida no resultó desplegable en los entornos universitarios disponibles, donde no se podían
+              levantar servicios Docker y Kafka con normalidad. Para conservar la portabilidad, el flujo se trasladó a un notebook
+              Jupyter ejecutable en el entorno autorizado de la universidad.
+            </p>
+            <p>
+              La primera solución concentraba demasiada lógica y salida textual en el propio <code>.ipynb</code>. En ejecuciones largas,
+              la acumulación de logs y outputs hacía crecer el documento, ralentizaba la interfaz y podía terminar bloqueando la sesión.
+            </p>
+          </article>
+
+          <article class="phase">
+            <h3>Etapa 5 · Notebook como orquestador y ejecución en módulos Python</h3>
+            <p>
+              Para evitar que el notebook fuese a la vez interfaz, implementación y almacén de logs, la lógica se extrajo al paquete
+              <code>neuroevolution/</code>. El notebook actual actúa como un orquestador ligero: prepara la configuración, invoca las
+              funciones Python y deja que el proceso escriba el seguimiento persistente en archivos de texto y JSON.
+            </p>
+            <div class="grid three">
+              <div class="card"><h4><code>test.ipynb</code></h4><p class="mini">Configura y lanza el experimento sin contener la implementación completa.</p></div>
+              <div class="card"><h4><code>neuroevolution/</code></h4><p class="mini">Construye modelos, entrena folds y ejecuta la evolución.</p></div>
+              <div class="card"><h4><code>artifacts/</code></h4><p class="mini">Conserva logs TXT, progreso JSON, checkpoints y resultados.</p></div>
+            </div>
+            <p>
+              El archivo <code>execution_log.txt</code> permite seguir la ejecución sin almacenar miles de líneas como output de celdas;
+              <code>generation_progress.txt</code> resume la evolución y <code>evolution_progress.json</code> permite reanudar el estado.
+            </p>
+          </article>
+
+          <article class="phase">
+            <h3>Etapa 6 · Intentos de paralelización y problemas de memoria</h3>
+            <p>
+              El siguiente cuello de botella fue el tiempo. Se probaron distintas formas de paralelizar evaluaciones mediante hilos.
+              El problema observado no se explica únicamente por el GIL de Python: el entrenamiento de PyTorch ejecuta buena parte
+              del trabajo en código nativo, pero la combinación de múltiples modelos, DataLoaders, copias de tensores, procesos de
+              carga y memoria GPU/CPU producía contención y episodios de <abbr title="Out Of Memory">OOM</abbr>.
+            </p>
+            <p>
+              Paralelizar muchos individuos completos multiplicaba el consumo de datos y estados de entrenamiento. Además, una
+              ejecución larga seguía siendo vulnerable si cada tarea recreaba loaders o retenía memoria. Por ello se abandonó el
+              paralelismo sin límites y se buscó una unidad de trabajo más controlable.
+            </p>
+          </article>
+
+          <article class="phase">
+            <h3>Etapa 7 · Evaluación integrada en cinco folds</h3>
+            <p>
+              La solución adoptada fue integrar la evaluación de cinco folds dentro del fitness de cada individuo. El sistema crea
+              un conjunto independiente de DataLoaders por fold, lo almacena en una caché global y lo reutiliza para los siguientes
+              individuos. Por tanto, no existe un único DataLoader físico para los cinco folds: existen cinco grupos de loaders,
+              cargados una vez por configuración y mantenidos para evitar lecturas y conversiones repetidas.
+            </p>
+            <p>
+              Los cinco folds pueden enviarse a un <code>ThreadPoolExecutor</code> con un máximo configurable de workers. Esta forma de
+              paralelismo es acotada y conserva la correspondencia entre un individuo y sus cinco evaluaciones. En una sola GPU el
+              número de workers debe ajustarse a la memoria disponible; en CPU o hardware con mayor capacidad puede aumentarse.
+            </p>
+            <div class="callout good">
+              <strong>Consecuencia metodológica:</strong> el fitness ya no representa el mejor resultado de un individuo en un único
+              fold. Es la media del F1 de validation sintética en los cinco folds. Para ser seleccionado, un individuo debe rendir de
+              forma consistente en varias particiones, lo que reduce la preferencia por arquitecturas accidentalmente buenas en un
+              solo caso y favorece una generalización posterior más robusta.
+            </div>
+          </article>
+
+          <article class="phase">
+            <h3>Etapa 8 · Estado actual y siguiente evolución del generador</h3>
+            <p>
+              El generador actual sigue siendo deliberadamente básico: produce pilas secuenciales de Conv1D, pooling y capas densas.
+              Ya puede evolucionar profundidad, anchura, kernels, activaciones y parámetros de entrenamiento, pero no representa aún
+              bloques complejos ni conexiones internas no secuenciales.
+            </p>
+            <p>
+              La siguiente etapa consiste en ampliar el espacio genético para que pueda generar <strong>bloques residuales</strong>,
+              <strong>módulos Inception</strong> y <strong>arquitecturas conocidas</strong> como ResNet1D, InceptionTime o CDIL-CNN.
+              Estas arquitecturas no se introducirían únicamente como baselines estáticos: podrían actuar como semillas, mutar sus
+              bloques e hiperparámetros y continuar evolucionando dentro de la población.
+            </p>
+          </article>
+        </div>
+      </section>
+
+      <section id="resumen">
+        <h2>1. Resumen ejecutivo</h2>
+        <p class="section-intro">
+          El proyecto realiza una búsqueda evolutiva de redes <strong>Conv1D secuenciales</strong> para clasificar señales de voz.
+          Cada genoma define profundidad, filtros, kernels, capas densas y varios hiperparámetros de entrenamiento. Para medir su
+          aptitud se entrenan cinco modelos —uno por partición— y se usa la media del F1 de validación. Después, la arquitectura
+          ganadora se reentrena desde cero con train sintético por fold, se selecciona con validation sintética, se informa sobre
+          test sintético y se evalúa finalmente —sin nuevos ajustes— sobre test real.
+        </p>
+        <div class="grid three">
+          <div class="card"><div class="metric">64</div><div class="metric-label">individuos por generación por defecto</div></div>
+          <div class="card"><div class="metric">250</div><div class="metric-label">generaciones máximas por defecto</div></div>
+          <div class="card"><div class="metric">5</div><div class="metric-label">particiones sintéticas emparejadas con test real</div></div>
+          <div class="card"><div class="metric">11 + 4</div><div class="metric-label">máximo de capas Conv1D + FC</div></div>
+          <div class="card"><div class="metric">100</div><div class="metric-label">épocas máximas por entrenamiento</div></div>
+          <div class="card"><div class="metric">F1</div><div class="metric-label">criterio de fitness y checkpoint</div></div>
+        </div>
+        <div class="callout good">
+          <strong>Protocolo sintético→real:</strong> train sintético actualiza pesos, validation sintética selecciona épocas y
+          arquitecturas, test sintético aporta una medición interna y el test real queda reservado para la evaluación final.
+          Ningún dato real actualiza pesos ni selecciona checkpoints.
+        </div>
+        <div class="callout warn">
+          <strong>La ampliación solicitada aún es futura:</strong> el código ejecutable actual no contiene bloques residuales,
+          módulos Inception ni constructores de ResNet1D/InceptionTime/CDIL-CNN. Algunas notas en <code>mejoras/</code> los marcan
+          como implementados, pero esa afirmación no coincide con los módulos y pruebas presentes en este checkout.
+        </div>
+        <div class="callout">
+          <strong>Interpretación doctoral:</strong> el estado actual demuestra viabilidad técnica del pipeline, pero no valida todavía
+          la hipótesis de investigación. La evidencia concluyente debe proceder de baselines reproducidos, ablaciones, múltiples
+          semillas, intervalos de confianza y una auditoría de independencia por sujeto.
+        </div>
+      </section>
+
+      <section id="evidencia">
+        <h2>2. Evidencia verificada en esta revisión</h2>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Comprobación</th><th>Resultado</th><th>Lectura correcta</th></tr></thead>
+            <tbody>
+              <tr><td>Estado Git</td><td>Base <code>6c1b188</code> más cambios locales del protocolo sintético→real</td><td>El documento describe el código modificado en esta sesión, todavía sin commit.</td></tr>
+              <tr><td>Paquete Python</td><td>27 archivos <code>.py</code>, 4.664 líneas</td><td>La lógica reutilizable está en <code>neuroevolution/</code>.</td></tr>
+              <tr><td>Pruebas declaradas</td><td>16 tests en 3 archivos</td><td>Cubren separación sintético/real, mecanismos NEAT-like y reporting final.</td></tr>
+              <tr><td>Compilación</td><td><span class="status ok">OK</span> <code>compileall neuroevolution</code></td><td>No se detectaron errores sintácticos.</td></tr>
+              <tr><td>Suite <code>pytest</code></td><td><span class="status ok">16/16 aprobadas</span></td><td>Ejecutadas en CPU; solo aparecen avisos esperados de métricas sobre muestras unitarias de test.</td></tr>
+              <tr><td>Fuente sintética</td><td><code>files_syn_40_1e5_N</code></td><td>Train, validation y test internos del proceso evolutivo.</td></tr>
+              <tr><td>Formas sintéticas</td><td>7.200 / 2.400 / 2.380 por fold</td><td>Train, validation y test; secuencia de 11.520 valores.</td></tr>
+              <tr><td>Fuente final real</td><td><code>files_real_N</code>: 60 muestras de test por fold</td><td>Solo <code>X_test/y_test</code> se cargan para la medición final.</td></tr>
+              <tr><td>Balance de clases</td><td>Sintético: 3.600/3.600, 1.200/1.200, 1.190/1.190; real test: 30/30</td><td>Las clases 0 y 1 están equilibradas en todas las fuentes usadas.</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="mini">La ausencia de un manifiesto de sujetos impide certificar desde los NPY el aislamiento estricto por sujeto y la cobertura de test a través de folds.</p>
+      </section>
+
+      <section id="mapa">
+        <h2>3. Mapa del proyecto y responsabilidades</h2>
+        <p class="section-intro">La ruta recomendada para trabajar es <code>test.ipynb → neuroevolution/ → artifacts/</code>. Los notebooks grandes conservan lógica histórica duplicada y no deben ser la fuente principal de cambios.</p>
+        <div class="grid two">
+          <div class="card">
+            <h3>Puntos de entrada</h3>
+            <ul>
+              <li><a href="../test.ipynb"><code>test.ipynb</code></a>: orquestador modular actual; 22 celdas.</li>
+              <li><a href="../best_Audio_hybrid_neuroevolution_notebook.ipynb"><code>best_Audio…ipynb</code></a>: referencia histórica monolítica; 49 celdas.</li>
+              <li><a href="../unified_test.ipynb"><code>unified_test.ipynb</code></a>: variante monolítica avanzada; 48 celdas.</li>
+            </ul>
+          </div>
+          <div class="card">
+            <h3>Paquete activo</h3>
+            <ul class="file-tree">
+              <li><code>config.py</code>: valores por defecto.</li>
+              <li><code>data/loader.py</code>: existencia y forma de datos.</li>
+              <li><code>models/</code>: validación y construcción CNN.</li>
+              <li><code>genetics/</code>: creación, cruce y mutación.</li>
+              <li><code>evolution/</code>: bucle y fitness.</li>
+              <li><code>evaluation/</code>: test final y métricas.</li>
+              <li><code>visualization/</code>: gráficas e informes.</li>
+            </ul>
+          </div>
+        </div>
+        <div class="flow" aria-label="Flujo principal del proyecto">
+          <div><span class="step">01</span><strong>Configurar</strong><small>Semillas, dispositivo, datos y presupuesto.</small></div>
+          <div><span class="step">02</span><strong>Verificar datos</strong><small>30 NPY y longitud de secuencia.</small></div>
+          <div><span class="step">03</span><strong>Evolucionar</strong><small>Crear, entrenar, seleccionar y reproducir.</small></div>
+          <div><span class="step">04</span><strong>Generalizar a real</strong><small>Reentrenar con sintéticos y medir test real.</small></div>
+          <div><span class="step">05</span><strong>Reportar</strong><small>JSON, checkpoints, logs y gráficas.</small></div>
+        </div>
+      </section>
+
+      <section id="datos">
+        <h2>4. Datos y protocolo experimental</h2>
+        <h3>4.1 Contrato de cada fold: sintético→real</h3>
+        <div class="grid four">
+          <div class="card"><h4>Train sintético</h4><p><strong>7.200 muestras</strong> · 3.600/3.600.</p><p>Única fuente que actualiza los pesos mediante backpropagation.</p></div>
+          <div class="card"><h4>Validation sintética</h4><p><strong>2.400 muestras</strong> · 1.200/1.200.</p><p>Early stopping, mejor época, checkpoint por fold y fitness evolutivo.</p></div>
+          <div class="card"><h4>Test sintético</h4><p><strong>2.380 muestras</strong> · 1.190/1.190.</p><p>Medición interna informativa; no selecciona épocas ni individuos.</p></div>
+          <div class="card"><h4>Test final real</h4><p><strong>60 muestras</strong> · 30/30.</p><p>Evaluación de generalización sin reentrenar ni ajustar con datos reales.</p></div>
+        </div>
+        <h3>4.2 Carga paso a paso</h3>
+        <ol>
+          <li><code>load_dataset(config)</code> resuelve <code>data/sets/folds_5/files_syn_40_1e5_N</code> y comprueba los 30 ficheros sintéticos requeridos.</li>
+          <li>Abre <code>X_train_40_1e5_N</code> del fold 1 y ajusta <code>config['sequence_length']</code> a 11.520.</li>
+          <li>También comprueba que existan los cinco pares <code>X_test/y_test_real_N</code> y que su longitud sea compatible.</li>
+          <li>Durante evolución, <code>load_fold_loaders</code> carga X/y sintéticos de train, validation y test.</li>
+          <li>Los arrays bidimensionales <code>(muestras, 11520)</code> se reforman a <code>(muestras, 1, 11520)</code>.</li>
+          <li>Los datos se convierten a <code>float32</code> y las etiquetas a <code>long</code>.</li>
+          <li>Se crean tres <code>DataLoader</code> sintéticos separados; solo train usa <code>shuffle=True</code>.</li>
+          <li>En la evaluación final, <code>load_fold_test_loader</code> carga exclusivamente el test real. El código de entrenamiento no recibe real train/validation.</li>
+          <li>El modo de caché por defecto es RAM; también existen <code>none</code> y <code>memmap</code>.</li>
+        </ol>
+        <div class="callout warn">
+          <strong>Terminología científica:</strong> describirlo como “evaluación de generalización sintético→real sobre cinco particiones emparejadas”.
+          No llamarlo validación cruzada clásica hasta disponer de un manifiesto que pruebe cómo rotan los sujetos reales entre folds.
+        </div>
+      </section>
+
+      <section id="individuo">
+        <h2>5. Qué es exactamente un individuo</h2>
+        <p class="section-intro">
+          Un individuo es un diccionario Python —el <strong>genoma</strong>— que codifica una arquitectura y sus hiperparámetros.
+          No contiene inicialmente pesos entrenados. Cada vez que se evalúa, <code>EvolvableCNN</code> traduce el genoma a módulos PyTorch y aprende pesos desde cero por fold.
+        </p>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Gen</th><th>Qué controla</th><th>Dominio actual</th><th>Uso real</th></tr></thead>
+            <tbody>
+              <tr><td><code>num_conv_layers</code></td><td>Profundidad convolucional</td><td>1–11</td><td>Una Conv1D + normalización + activación + MaxPool por capa.</td></tr>
+              <tr><td><code>filters</code></td><td>Canales de salida</td><td>Lista, 8–256</td><td>Un valor por capa Conv1D.</td></tr>
+              <tr><td><code>kernel_sizes</code></td><td>Campo receptivo local</td><td>3, 5, 7, 9, 11, 13, 15</td><td>Se fuerza a impar; padding conserva longitud antes del pooling.</td></tr>
+              <tr><td><code>num_fc_layers</code></td><td>Profundidad densa</td><td>1–4</td><td>Número de capas ocultas antes de la salida binaria.</td></tr>
+              <tr><td><code>fc_nodes</code></td><td>Ancho denso</td><td>Lista, 64–768</td><td>Un valor por capa FC.</td></tr>
+              <tr><td><code>activations</code></td><td>Activación convolucional</td><td>ReLU, LeakyReLU, Tanh, Sigmoid, SELU</td><td>Se aplica en Conv1D. Las capas FC usan ReLU fija.</td></tr>
+              <tr><td><code>dropout_rate</code></td><td>Regularización densa</td><td>0,1–0,5</td><td>Entre capas FC; la ruta conv usa dropout fijo 0,1 salvo la última.</td></tr>
+              <tr><td><code>learning_rate</code></td><td>Tamaño de paso</td><td>6 opciones, 1e-3 a 1e-5</td><td>Configura el optimizador de ese individuo.</td></tr>
+              <tr><td><code>optimizer</code></td><td>Algoritmo de actualización</td><td>Adam, AdamW, SGD, RMSprop</td><td>Se instancia por fold.</td></tr>
+              <tr><td><code>normalization_type</code></td><td>Normalización</td><td>batch o layer</td><td>BatchNorm funciona; LayerNorm Conv1D necesita corrección.</td></tr>
+              <tr><td><code>fitness</code></td><td>Aptitud</td><td>0–100</td><td>Media del F1 de validation sintética entre folds.</td></tr>
+              <tr><td><code>id</code></td><td>Identidad efímera</td><td>8 caracteres UUID</td><td>Cambia al crear descendencia.</td></tr>
+              <tr><td><code>innovation_genes</code></td><td>Alineamiento genético</td><td>Filtros, kernels y nodos FC</td><td>Usado por crossover y distancia de compatibilidad.</td></tr>
+              <tr><td><code>structural_history</code></td><td>Trazabilidad</td><td>Lista de eventos</td><td>Registra mutaciones, cruce e inicialización.</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <h3>Ejemplo representativo</h3>
+        <pre><code>{
+  "num_conv_layers": 3,
+  "filters": [16, 32, 64],
+  "kernel_sizes": [5, 9, 3],
+  "num_fc_layers": 2,
+  "fc_nodes": [256, 128],
+  "activations": ["relu", "selu", "leaky_relu"],
+  "dropout_rate": 0.28,
+  "learning_rate": 0.0002,
+  "optimizer": "adamw",
+  "normalization_type": "batch",
+  "fitness": 0.0,
+  "id": "a1b2c3d4",
+  "innovation_genes": [...],
+  "structural_history": [...]
+}</code></pre>
+      </section>
+
+      <section id="formacion">
+        <h2>6. Cómo se forman los individuos</h2>
+        <h3>6.1 Génesis de un genoma aleatorio</h3>
+        <ol>
+          <li>Calcula la profundidad Conv1D segura: <code>floor(log2(sequence_length / 4))</code>. Con 11.520 da 11, igual al máximo configurado.</li>
+          <li>Sortea el número de capas Conv1D entre 1 y el tope activo, y las FC entre 1 y su tope.</li>
+          <li>Sortea un filtro base entre 8 y 16 y duplica progresivamente: <code>base × 2^i</code>, limitado a 256.</li>
+          <li>Escoge un kernel permitido de forma independiente para cada convolución.</li>
+          <li>Sortea el ancho de la primera FC entre 64 y 768; las siguientes se reducen aproximadamente a la mitad, sin bajar de 64.</li>
+          <li>Crea tantas activaciones como el máximo entre el número de capas Conv y FC.</li>
+          <li>Sortea dropout, learning rate y optimizador. La normalización inicial se fija a BatchNorm.</li>
+          <li>Valida la reducción espacial; si es válida, construye genes de innovación y devuelve el individuo.</li>
+          <li>Tras 100 intentos fallidos, usa un genoma mínimo seguro: 1 Conv(32, k=3), 1 FC(64), ReLU, dropout 0,3 y Adam.</li>
+        </ol>
+
+        <h3>6.2 Formación de la población inicial</h3>
+        <p>
+          Esta estratificación se aplica <strong>únicamente al crear la generación inicial —generación 0—</strong>. Los
+          individuos regulares se ordenan por su posición en la población y se dividen en cuatro grupos. El primer grupo
+          puede generar redes con un máximo aproximado de un cuarto de la profundidad global; el segundo, hasta dos cuartos;
+          el tercero, hasta tres cuartos; y el cuarto, hasta el máximo completo. El límite es un <em>tope de muestreo</em>:
+          dentro de cada grupo, el número efectivo de capas se sortea entre el mínimo configurado y dicho tope.
+        </p>
+        <div class="callout good">
+          <strong>Ejemplo conceptual con 20 individuos:</strong> si todos los puestos se dedicaran a la inicialización regular,
+          los individuos 1–5 tendrían como tope <code>ceil(max_conv_layers × 1/4)</code>; los individuos 6–10,
+          <code>ceil(max_conv_layers × 2/4)</code>; los individuos 11–15, <code>ceil(max_conv_layers × 3/4)</code>; y los
+          individuos 16–20 podrían alcanzar <code>max_conv_layers</code>. Así, la generación inicial no queda sesgada hacia
+          una única profundidad y explora desde arquitecturas baratas hasta arquitecturas profundas.
+        </div>
+        <p>Con <code>population_size=64</code>, el motor reserva un puesto especial y crea 63 individuos regulares repartidos por cuartiles de profundidad:</p>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Grupo</th><th>Tope Conv</th><th>Tope FC</th><th>Finalidad</th></tr></thead>
+            <tbody>
+              <tr><td>Q1</td><td>3</td><td>1</td><td>Modelos baratos y poco profundos.</td></tr>
+              <tr><td>Q2</td><td>6</td><td>2</td><td>Complejidad intermedia.</td></tr>
+              <tr><td>Q3</td><td>9</td><td>3</td><td>Modelos profundos.</td></tr>
+              <tr><td>Q4</td><td>11</td><td>4</td><td>Exploración del límite global.</td></tr>
+              <tr><td>Reserva</td><td>6 al inicio</td><td>2 al inicio</td><td>Un individuo nuevo con el doble del tope incremental actual.</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="callout">
+          <strong>Matiz de la implementación actual:</strong> el motor reserva el último puesto para una semilla
+          <em>double-cap</em>. Por ello, con una población configurada de 20 individuos, el reparto ejecutado no es exactamente
+          5–5–5–5, sino 5 individuos regulares en Q1, 5 en Q2, 5 en Q3, 4 en Q4 y 1 semilla especial. Con el valor por defecto
+          de 64 ocurre lo mismo sobre 63 individuos regulares. El motor también calcula topes incrementales que crecen cada
+          8 generaciones desde 3 Conv/1 FC; sin embargo, la inicialización por cuartiles usa los máximos globales. Por tanto,
+          la población inicial ya puede contener arquitecturas de hasta 11 Conv y 4 FC. El crecimiento incremental afecta
+          sobre todo al individuo especial de reserva, no limita toda la población inicial.
+        </div>
+        <h3>6.3 Otras maneras en que nace un individuo</h3>
+        <div class="grid three">
+          <div class="card"><h4>Crossover + mutación</h4><p>Dos padres producen dos hijos alineando genes de innovación; cada hijo se muta después.</p></div>
+          <div class="card"><h4>Clon sin crossover</h4><p>Con probabilidad 10% se copian los padres, se renuevan IDs y posteriormente se mutan.</p></div>
+          <div class="card"><h4>Semilla double-cap</h4><p>Cada generación reserva un individuo aleatorio nuevo con profundidad objetivo ampliada.</p></div>
+        </div>
+      </section>
+
+      <section id="modelo">
+        <h2>7. Traducción del genoma a una red PyTorch</h2>
+        <div class="table-wrap">
+          <svg class="diagram" viewBox="0 0 1080 250" role="img" aria-label="Flujo actual del modelo Conv1D">
+            <defs><marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#315f88"/></marker></defs>
+            <rect class="accent" x="20" y="78" rx="14" width="150" height="88"/><text x="95" y="112" text-anchor="middle" font-size="16" font-weight="700">Entrada</text><text class="muted" x="95" y="139" text-anchor="middle" font-size="13">N × 1 × 11520</text>
+            <path class="arrow" d="M170 122 H215"/>
+            <rect class="node" x="220" y="45" rx="14" width="190" height="155"/><text x="315" y="76" text-anchor="middle" font-size="16" font-weight="700">Bloque Conv × L</text><text class="muted" x="315" y="105" text-anchor="middle" font-size="13">Conv1D same</text><text class="muted" x="315" y="128" text-anchor="middle" font-size="13">Norm → activación</text><text class="muted" x="315" y="151" text-anchor="middle" font-size="13">MaxPool(2)</text><text class="muted" x="315" y="174" text-anchor="middle" font-size="13">Dropout(0.1)*</text>
+            <path class="arrow" d="M410 122 H455"/>
+            <rect class="node" x="460" y="78" rx="14" width="150" height="88"/><text x="535" y="112" text-anchor="middle" font-size="16" font-weight="700">Flatten</text><text class="muted" x="535" y="139" text-anchor="middle" font-size="13">C × floor(L/2ᴸ)</text>
+            <path class="arrow" d="M610 122 H655"/>
+            <rect class="node" x="660" y="45" rx="14" width="190" height="155"/><text x="755" y="76" text-anchor="middle" font-size="16" font-weight="700">Bloque FC × D</text><text class="muted" x="755" y="105" text-anchor="middle" font-size="13">Linear</text><text class="muted" x="755" y="128" text-anchor="middle" font-size="13">Norm → ReLU</text><text class="muted" x="755" y="151" text-anchor="middle" font-size="13">Dropout(gene)*</text><text class="muted" x="755" y="174" text-anchor="middle" font-size="13">* salvo última</text>
+            <path class="arrow" d="M850 122 H895"/>
+            <rect class="accent" x="900" y="78" rx="14" width="150" height="88"/><text x="975" y="112" text-anchor="middle" font-size="16" font-weight="700">Salida</text><text class="muted" x="975" y="139" text-anchor="middle" font-size="13">N × 2 logits</text>
+          </svg>
+        </div>
+        <h3>Construcción paso a paso</h3>
+        <ol>
+          <li>El constructor corrige las longitudes de <code>filters</code>, <code>kernel_sizes</code> y <code>fc_nodes</code> para que coincidan con los contadores.</li>
+          <li>Por cada capa convolucional crea <code>Conv1d(in, out, kernel, padding=kernel//2)</code>; la convolución conserva la longitud.</li>
+          <li>Añade BatchNorm1d o LayerNorm, la activación codificada, MaxPool1d(2) y dropout 0,1 salvo en la última capa conv.</li>
+          <li>Pasa un tensor dummy por la rama convolucional en modo evaluación para calcular el tamaño de flatten y detectar dimensiones inválidas.</li>
+          <li>Construye las capas densas como Linear → normalización → ReLU → dropout, y termina con Linear a 2 clases.</li>
+          <li>En <code>forward</code>, si la entrada llega como <code>(N, L)</code>, añade automáticamente el canal para obtener <code>(N, 1, L)</code>.</li>
+        </ol>
+        <p>La longitud tras <em>n</em> poolings es aproximadamente <code>floor(11520 / 2ⁿ)</code>. Con 11 capas queda en 5 posiciones; el margen mínimo del validador es 4.</p>
+      </section>
+
+      <section id="fitness">
+        <h2>8. Entrenamiento, validación y cálculo del fitness</h2>
+        <h3>8.1 Evaluación evolutiva de un individuo</h3>
+        <div class="flow">
+          <div><span class="step">A</span><strong>Enviar 5 folds</strong><small>Todos proceden de la fuente sintética.</small></div>
+          <div><span class="step">B</span><strong>Construir 5 modelos</strong><small>Mismo genoma, pesos independientes.</small></div>
+          <div><span class="step">C</span><strong>Entrenar sintético</strong><small>CrossEntropy, AMP en CUDA, hasta 100 épocas.</small></div>
+          <div><span class="step">D</span><strong>Seleccionar época</strong><small>Mejor F1 de validation sintética.</small></div>
+          <div><span class="step">E</span><strong>Medir</strong><small>Fitness en validation; test sintético informativo.</small></div>
+        </div>
+        <ol>
+          <li>Cada fold crea su propio modelo y optimizador definidos por el genoma.</li>
+          <li>Entrena exclusivamente sobre train sintético con <code>CrossEntropyLoss</code>; AMP float16 se activa únicamente en CUDA.</li>
+          <li>Valida sobre datos sintéticos cada época. Si F1 mejora más de 0,01 puntos, guarda una copia del estado.</li>
+          <li>Detiene el fold tras 18 validaciones sin mejora suficiente, o al alcanzar 100 épocas.</li>
+          <li>Restaura el mejor estado y recalcula métricas sobre validation sintética.</li>
+          <li>Evalúa además el test sintético y lo guarda bajo <code>synthetic_test_metrics</code>, sin incorporarlo al fitness.</li>
+          <li>El fitness del genoma es <code>mean(F1_synthetic_validation_fold_1 … fold_5)</code>; también se registra desviación estándar.</li>
+          <li>Para el checkpoint global se devuelve el modelo del fold con mayor F1 individual, mientras la aptitud sigue siendo la media de folds.</li>
+        </ol>
+        <h3>8.2 Evaluación final sintético→real</h3>
+        <p>
+          <code>evaluate_5fold_cross_validation</code> toma el mejor <strong>genoma</strong>, crea un modelo nuevo por fold, entrena en
+          train sintético, selecciona la mejor época con validation sintética y registra el test sintético. Sin realizar ningún paso
+          adicional de optimización, aplica ese mismo estado al test real del fold. Los resultados principales son las métricas reales;
+          las métricas sintéticas quedan separadas como diagnóstico del salto de dominio.
+        </p>
+        <div class="callout good"><strong>Separación correcta:</strong> los datos sintéticos responden “qué arquitectura/época elegir y cómo rinde internamente”; el test real responde “cómo generaliza al dominio real”.</div>
+      </section>
+
+      <section id="evolucion">
+        <h2>9. Ciclo evolutivo completo</h2>
+        <ol>
+          <li><strong>Reanudar o inicializar.</strong> Si existe <code>evolution_progress.json</code>, carga generación, población, historial y checkpoint; de lo contrario crea la población inicial.</li>
+          <li><strong>Evaluar.</strong> Recorre los individuos secuencialmente; dentro de cada individuo sus cinco folds pueden correr en paralelo.</li>
+          <li><strong>Conservar élites.</strong> El 12,5% superior —8 de 64— se copia con fitness y métricas cacheadas para evitar reentrenarlo en la siguiente generación.</li>
+          <li><strong>Seleccionar padres.</strong> Se toma el mejor de un torneo aleatorio de tamaño 3.</li>
+          <li><strong>Cruzar.</strong> Con probabilidad 90% alinea genes de innovación y genera dos descendientes; si no, clona ambos padres.</li>
+          <li><strong>Mutar.</strong> Cada hijo puede cambiar profundidad, filtros, kernels, FC, activaciones, dropout, LR, optimizador y normalización.</li>
+          <li><strong>Inyectar diversidad.</strong> El último puesto se ocupa con una semilla aleatoria <em>double-cap</em>.</li>
+          <li><strong>Ajustar mutación.</strong> Si la desviación de fitness es baja, aumenta la tasa; si la población ya es diversa, la reduce.</li>
+          <li><strong>Parar.</strong> Termina al alcanzar 100% de fitness, 250 generaciones o 60 generaciones sin mejora mínima de 0,01 puntos.</li>
+        </ol>
+        <h3>Tasa de mutación adaptativa</h3>
+        <pre><code>diversity_factor = min(1, std_fitness / 10)
+current_rate = clamp(
+    base_rate + ((1 - diversity_factor) - 0.5) * 0.4,
+    mutation_rate_min,
+    mutation_rate_max
+)
+
+# Con defaults: base=0.20, mínimo=0.05, máximo=0.50</code></pre>
+      </section>
+
+      <section id="operadores">
+        <h2>10. Operadores genéticos y mecanismos NEAT-like</h2>
+        <h3>10.1 Mutación</h3>
+        <ul>
+          <li>La profundidad cambia como máximo en una de las dos familias —Conv o FC— por llamada.</li>
+          <li>El salto estructural crece con la generación: <code>randint(1, max(1, int(generation × 0.03)))</code>.</li>
+          <li>Cada filtro, kernel, nodo FC y activación se muta de forma independiente con la tasa actual.</li>
+          <li>Dropout, learning rate, optimizador y normalización tienen su propio sorteo con la misma tasa.</li>
+          <li>Después se corrigen longitudes, se renueva el ID, se reinicia fitness y se reconstruyen genes de innovación.</li>
+        </ul>
+        <h3>10.2 Crossover</h3>
+        <ul>
+          <li>El padre con mayor fitness actúa como donante dominante.</li>
+          <li>Genes con el mismo <code>innovation_id</code> se eligen al 50% entre padres.</li>
+          <li>Los genes exclusivos del dominante pasan siempre; los exclusivos del otro padre pasan con probabilidad 20%.</li>
+          <li>Se reconstruyen listas de filtros, kernels y nodos FC; el resto de campos se hereda principalmente del dominante.</li>
+        </ul>
+        <h3>10.3 Innovación y especiación</h3>
+        <div class="grid two">
+          <div class="card">
+            <h4>Implementado y usado</h4>
+            <p>UUID v5 deterministas, historial estructural y alineamiento de filtros/kernels/nodos en crossover.</p>
+          </div>
+          <div class="card">
+            <h4>Disponible pero no integrado</h4>
+            <p>Distancia de compatibilidad, asignación a especies y fitness compartido existen, pero el bucle <code>evolve()</code> no llama a la especiación ni reproduce por especie.</p>
+          </div>
+        </div>
+        <div class="callout warn">
+          <strong>No es NEAT clásico.</strong> El ID de innovación actual incluye índice y <em>valor</em>. Si cambia el valor de un filtro, cambia su innovación, aunque ocupe la misma posición estructural. Además, no hay genes de conexión ni habilitación/deshabilitación operativa. La descripción rigurosa es “búsqueda evolutiva con mecanismos NEAT-like”.
+        </div>
+      </section>
+
+      <section id="ejecucion">
+        <h2>11. Cómo ejecutar y qué artefactos produce</h2>
+        <h3>11.1 Ruta recomendada: notebook modular</h3>
+        <pre><code>from neuroevolution import (
+    get_default_config,
+    setup_device_and_seeds,
+    load_dataset,
+    HybridNeuroevolution,
+    evaluate_5fold_cross_validation,
+)
+
+config = get_default_config(info_path="artifacts/mi_run")
+
+# Fuente principal: entrenamiento, validation y test internos sintéticos.
+config["dataset_id"] = "40_1e5_N"
+config["fold_files_subdirectory"] = "files_syn_40_1e5_N"
+
+# Fuente final: únicamente test real, sin actualización de pesos.
+config["final_evaluation_dataset_id"] = "real_N"
+config["final_evaluation_fold_files_subdirectory"] = "files_real_N"
+
+device = setup_device_and_seeds(seed=42)
+load_dataset(config)  # verifica ambas fuentes y actualiza sequence_length
+
+engine = HybridNeuroevolution(config, device)
+best_genome = engine.evolve()
+
+final_results = evaluate_5fold_cross_validation(
+    best_genome=best_genome,
+    config=config,
+    device=device,
+    neuroevolution_instance=engine,
+)</code></pre>
+        <h3>11.2 Salidas</h3>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Artefacto</th><th>Contenido</th><th>Momento</th></tr></thead>
+            <tbody>
+              <tr><td><code>execution_log.txt</code></td><td>Salida del notebook redirigida.</td><td>Durante todo el run.</td></tr>
+              <tr><td><code>generation_progress.txt</code></td><td>Resumen por individuo y generación.</td><td>Tras evaluar cada generación.</td></tr>
+              <tr><td><code>evolution_progress.json</code></td><td>Población, mejor individuo, estadísticas y ruta de checkpoint.</td><td>Guardado incremental y reanudable.</td></tr>
+              <tr><td><code>best_model_gen…pth</code></td><td>Estado del modelo, genoma y procedencia sintética de train/validation/test.</td><td>Cuando mejora el mejor global sintético.</td></tr>
+              <tr><td><code>synthetic_to_real_5fold_results_*.json</code></td><td>Métricas sintéticas internas, métricas reales finales y procedencia completa.</td><td>Evaluación final.</td></tr>
+              <tr><td>PNG/reportes</td><td>Evolución, matrices de confusión y resumen de arquitectura.</td><td>Al ejecutar utilidades de reporting.</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="callout danger"><strong>Reanudación:</strong> el JSON no guarda un hash de configuración/código. Reanudar una ejecución tras cambiar el esquema del genoma puede mezclar estados incompatibles. La migración propuesta más adelante debe versionar el esquema.</div>
+      </section>
+
+      <section id="estado">
+        <h2>12. Estado real: implementado, parcial y ausente</h2>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Capacidad</th><th>Estado</th><th>Observación</th></tr></thead>
+            <tbody>
+              <tr><td>CNN 1D secuencial evolutiva</td><td><span class="status ok">Implementado</span></td><td>Es la única topología construida por <code>EvolvableCNN</code>.</td></tr>
+              <tr><td>Separación sintético→real</td><td><span class="status ok">Implementado</span></td><td>Pesos y selección sintéticos; métricas finales sobre test real.</td></tr>
+              <tr><td>Test sintético interno</td><td><span class="status ok">Implementado</span></td><td>Se informa pero no participa en fitness ni checkpoint.</td></tr>
+              <tr><td>Fitness F1 mult-fold</td><td><span class="status ok">Implementado</span></td><td>Media de cinco F1 de validation sintética.</td></tr>
+              <tr><td>Aislamiento del test real</td><td><span class="status ok">Implementado</span></td><td>El loader final solo abre X/y de test real.</td></tr>
+              <tr><td>AMP y caché de folds</td><td><span class="status ok">Implementado</span></td><td>AMP CUDA; caché none/RAM/memmap.</td></tr>
+              <tr><td>Mutación adaptativa</td><td><span class="status ok">Implementado</span></td><td>Depende de desviación del fitness.</td></tr>
+              <tr><td>Innovaciones</td><td><span class="status partial">Parcial</span></td><td>Sirven para genes escalares, no representan bloques o conexiones.</td></tr>
+              <tr><td>Especiación</td><td><span class="status partial">Desconectada</span></td><td>Helpers y tests existen; no gobierna la reproducción real.</td></tr>
+              <tr><td>LayerNorm Conv1D</td><td><span class="status partial">Defectuoso</span></td><td><code>nn.LayerNorm(out_channels)</code> no corresponde a tensores N,C,L.</td></tr>
+              <tr><td>Bloques residuales</td><td><span class="status missing">No implementado</span></td><td>Sin clase de bloque, genes, mutaciones ni tests.</td></tr>
+              <tr><td>Módulos Inception</td><td><span class="status missing">No implementado</span></td><td>Sin ramas paralelas ni representación genética.</td></tr>
+              <tr><td>ResNet1D / InceptionTime / CDIL-CNN</td><td><span class="status missing">No implementado</span></td><td>Solo figuran como referencias/objetivos documentales.</td></tr>
+              <tr><td>Runner CLI y configs versionadas</td><td><span class="status missing">No implementado</span></td><td>La ejecución depende principalmente del notebook.</td></tr>
+              <tr><td>Manifiesto de sujetos</td><td><span class="status missing">No disponible</span></td><td>No puede auditarse leakage por sujeto desde los NPY.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="riesgos">
+        <h2>13. Riesgos, inconsistencias y deuda técnica prioritaria</h2>
+        <details open><summary>1. Paralelismo de cinco folds sobre una sola GPU</summary><div>Con <code>fold_parallel_workers=5</code> se entrenan cinco modelos simultáneos en el mismo dispositivo. Puede aumentar memoria, contención y OOM. En una única GPU conviene ejecutar folds secuencialmente y reservar el paralelismo a carga/preprocesado.</div></details>
+        <details open><summary>2. LayerNorm incorrecto en Conv1D</summary><div>La salida Conv1D tiene forma <code>(N,C,L)</code>, pero <code>LayerNorm(out_channels)</code> normaliza la última dimensión. Solución: un wrapper que transpose a <code>(N,L,C)</code>, aplique LayerNorm(C) y revierta, o usar GroupNorm.</div></details>
+        <details><summary>3. Especiación no operativa</summary><div>El proyecto calcula distancias en funciones aisladas, pero selección y reproducción siguen siendo globales. No hay fitness sharing ni cuotas de descendencia por especie en el ciclo activo.</div></details>
+        <details><summary>4. Innovación ligada al valor</summary><div>Una innovación estructural debería identificar el “lugar/tipo de gen” y conservarse al cambiar su valor. El UUID actual mezcla posición y valor, por lo que una mutación paramétrica convierte un gen homólogo en disjunto.</div></details>
+        <details><summary>5. Validación de genoma incompleta</summary><div>Se corrigen filtros, kernels y FC, pero no la longitud de activaciones ni la compatibilidad de normalización. El modelo usa módulo sobre activaciones para Conv y ReLU fija en FC, ocultando parte de la inconsistencia.</div></details>
+        <details><summary>6. Coste explosivo</summary><div>64 individuos × 5 folds × hasta 100 épocas × 250 generaciones es un techo teórico enorme. Antes de ampliar el espacio con residual/Inception conviene introducir evaluación multi-fidelity, caché por firma estable y límites de parámetros/VRAM.</div></details>
+        <details><summary>7. Documentación contradictoria</summary><div><code>mejoras/YA IMPLEMENTADAS.md</code> menciona residual, Inception, Pareto y conteo de parámetros como ya presentes, pero no aparecen en este checkout. Este HTML toma el código y tests actuales como fuente de verdad.</div></details>
+        <details><summary>8. Reproducibilidad parcial</summary><div>Se fijan semillas globales, pero los workers de DataLoader no tienen <code>worker_init_fn</code> ni generador explícito. Tampoco se captura automáticamente commit, entorno, CUDA/cuDNN, VRAM pico ni hash de configuración.</div></details>
+        <details><summary>9. Dependencias todavía no formalizadas</summary><div>La suite pasa 16/16 y la visualización usa ahora un import opcional de Seaborn, pero sigue faltando un <code>pyproject.toml</code> o <code>requirements.txt</code> bloqueado que permita reconstruir exactamente el entorno.</div></details>
+        <details><summary>10. Métricas de referencia sin trazabilidad bibliográfica dentro del repositorio</summary><div>Los valores objetivo de ResNet, LSTM-FCN, InceptionTime y CDIL-CNN están documentados, pero este checkout no conserva junto a la tabla la cita, versión del dataset y protocolo exacto de cada resultado. Para una presentación doctoral deben mostrarse como referencias provisionales hasta completar la bibliografía y reproducir baselines bajo un protocolo común.</div></details>
+      </section>
+
+      <section id="objetivo">
+        <h2>14. Arquitectura objetivo para residual, Inception y modelos conocidos</h2>
+        <p class="section-intro">
+          La ampliación debe cambiar el genoma desde “listas paralelas de capas” a una <strong>secuencia tipada de bloques</strong>.
+          Eso permite expresar topologías secuenciales, residuales e Inception bajo el mismo motor sin llenar el código de condiciones especiales.
+        </p>
+        <h3>14.1 Esquema de genoma propuesto (versión 2)</h3>
+        <pre><code>{
+  "schema_version": 2,
+  "family": "evolved",                 // evolved | resnet1d | inceptiontime | cdil_cnn | fcn1d
+  "stem": {"out_channels": 32, "kernel_size": 7, "stride": 2},
+  "blocks": [
+    {
+      "block_id": "b-001",             // identidad estructural persistente
+      "type": "residual_basic",         // sequential | residual_basic | residual_bottleneck | inception
+      "out_channels": 64,
+      "kernel_size": 5,
+      "repeats": 2,
+      "downsample": true,
+      "projection": "auto",
+      "normalization": "batch",
+      "activation": "relu",
+      "dropout": 0.10
+    },
+    {
+      "block_id": "b-002",
+      "type": "inception",
+      "bottleneck_channels": 32,
+      "branch_kernels": [9, 19, 39],
+      "branch_channels": [32, 32, 32],
+      "pool_branch": true,
+      "residual_every": 3
+    }
+  ],
+  "head": {"pool": "adaptive_avg", "hidden": [128], "dropout": 0.3},
+  "training": {"optimizer": "adamw", "learning_rate": 0.0002},
+  "fitness": 0.0,
+  "lineage": {"parents": [], "events": []}
+}</code></pre>
+        <h3>14.2 Bloque residual 1D</h3>
+        <div class="grid two">
+          <div class="card">
+            <h4>Rama principal</h4>
+            <p>Conv1D → Norm → Activación → Conv1D → Norm. Puede usar stride/pooling al inicio del bloque.</p>
+          </div>
+          <div class="card">
+            <h4>Atajo</h4>
+            <p>Identidad cuando forma y canales coinciden; Conv1D 1×1 con stride cuando cambian. La suma precede a la activación final.</p>
+          </div>
+        </div>
+        <pre><code>y = Norm2(Conv2(Act(Norm1(Conv1(x)))))
+skip = x if compatible(x, y) else Conv1x1(x, stride)
+out = Act(y + skip)</code></pre>
+        <h3>14.3 Módulo Inception 1D</h3>
+        <p>Procesa la misma entrada con varias escalas temporales en paralelo y concatena por canales:</p>
+        <pre><code>branch_1 = Conv1d(k=1)(x)
+branch_2 = Conv1d(k=small)(Bottleneck1x1(x))
+branch_3 = Conv1d(k=medium)(Bottleneck1x1(x))
+branch_4 = Conv1d(k=large)(Bottleneck1x1(x))
+branch_5 = Conv1d(k=1)(MaxPool1d(x))      # opcional
+out = concat([branch_1, branch_2, branch_3, branch_4, branch_5], dim=channels)</code></pre>
+        <h3>14.4 Registro único de constructores</h3>
+        <pre><code>BLOCK_REGISTRY = {
+    "sequential": SequentialConvBlock1d,
+    "residual_basic": ResidualBasicBlock1d,
+    "residual_bottleneck": ResidualBottleneckBlock1d,
+    "inception": InceptionBlock1d,
+    "dilated": DilatedConvBlock1d,
+}</code></pre>
+        <p>El modelo recorre <code>genome['blocks']</code> y delega cada entrada al constructor registrado. El validador realiza una inferencia de formas antes de entrenar, y una cabeza con <code>AdaptiveAvgPool1d(1)</code> evita capas densas gigantes dependientes de la longitud.</p>
+      </section>
+
+      <section id="roadmap">
+        <h2>15. Hoja de ruta de implementación</h2>
+        <div class="timeline">
+          <article class="phase">
+            <h3>Fase 0 · Estabilizar la base</h3>
+            <ol>
+              <li>Añadir <code>pyproject.toml</code> o <code>requirements.txt</code> e instalar dependencias de test.</li>
+              <li>Corregir LayerNorm Conv1D y cubrirlo con forward/backward tests.</li>
+              <li>Forzar <code>fold_parallel_workers=1</code> en modo single-GPU.</li>
+              <li>Añadir firma estable, caché de fitness, límite de parámetros y manejo explícito de OOM.</li>
+              <li>Versionar configuración, commit y entorno en cada run.</li>
+            </ol>
+            <p class="deliverable"><strong>Entregable:</strong> pipeline actual verde, reproducible y suficientemente barato para ampliar el espacio.</p>
+          </article>
+
+          <article class="phase">
+            <h3>Fase 1 · Genoma v2 y migración</h3>
+            <ol>
+              <li>Crear una representación tipada <code>blocks[]</code> con <code>schema_version=2</code>.</li>
+              <li>Implementar <code>migrate_v1_to_v2</code> para convertir cada capa Conv actual en un bloque secuencial.</li>
+              <li>Separar identidad estructural (<code>block_id</code>) de valores mutables.</li>
+              <li>Actualizar firma, validación, resumen, serialización, crossover y distancia de compatibilidad.</li>
+              <li>Rechazar de forma explícita checkpoints con versión incompatible o migrarlos.</li>
+            </ol>
+            <p class="deliverable"><strong>Entregable:</strong> resultados equivalentes para genomas v1 y v2 secuenciales.</p>
+          </article>
+
+          <article class="phase">
+            <h3>Fase 2 · Capas residuales</h3>
+            <ol>
+              <li>Implementar <code>ResidualBasicBlock1d</code> y proyección 1×1 automática.</li>
+              <li>Añadir genes para canales, kernel, repeticiones, downsample, normalización y dropout.</li>
+              <li>Añadir mutaciones: insertar/eliminar bloque, cambiar tipo, variar repeticiones y activar/desactivar proyección.</li>
+              <li>Alinear crossover por <code>block_id</code>; heredar el bloque como unidad y cruzar parámetros homólogos.</li>
+              <li>Proteger forma y memoria mediante inferencia previa y límite de parámetros.</li>
+            </ol>
+            <p class="deliverable"><strong>Entregable:</strong> población mixta sequential/residual con forward, entrenamiento de un batch y evolución corta.</p>
+          </article>
+
+          <article class="phase">
+            <h3>Fase 3 · Módulos Inception / InceptionTime</h3>
+            <ol>
+              <li>Implementar <code>InceptionBlock1d</code> con bottleneck opcional, kernels multi-escala y rama pooling.</li>
+              <li>Normalizar kernels a impares y limitar el total de canales concatenados.</li>
+              <li>Añadir conexiones residuales cada N módulos para reproducir el patrón InceptionTime.</li>
+              <li>Mutar kernels, número de ramas, anchos, bottleneck y rama pooling.</li>
+              <li>Definir reglas de cruce que no mezclen listas de ramas incompatibles sin validación.</li>
+            </ol>
+            <p class="deliverable"><strong>Entregable:</strong> individuos Inception puros y genomas híbridos válidos bajo presupuesto.</p>
+          </article>
+
+          <article class="phase">
+            <h3>Fase 4 · Arquitecturas conocidas como semillas y baselines</h3>
+            <ol>
+              <li>Crear constructores deterministas para FCN1D, ResNet1D-18/34, InceptionTime y CDIL-CNN.</li>
+              <li>Separar dos usos: <strong>baseline congelado</strong> para comparación y <strong>semilla evolutiva</strong> que sí puede mutar.</li>
+              <li>Reservar una fracción configurable de población para cada familia; el resto continúa aleatorio.</li>
+              <li>Etiquetar <code>origin_family</code> y conservar linaje al mutar.</li>
+              <li>Usar exactamente los mismos folds, semillas, presupuesto, criterio F1 y evaluación final.</li>
+            </ol>
+            <p class="deliverable"><strong>Entregable:</strong> comparación justa “desde cero vs semillas conocidas vs baselines fijos”.</p>
+          </article>
+
+          <article class="phase">
+            <h3>Fase 5 · Especiación y selección multiobjetivo reales</h3>
+            <ol>
+              <li>Integrar <code>assign_species</code> en cada generación y mantener representantes entre generaciones.</li>
+              <li>Calcular fitness ajustado y cuotas de descendencia por especie.</li>
+              <li>Incluir distancia de familia/bloques, no solo profundidad y valores escalares.</li>
+              <li>Añadir una opción Pareto con objetivos F1 ↑, parámetros ↓ y tiempo ↓.</li>
+              <li>Impedir que una familia barata monopolice la población o que una familia nueva desaparezca antes de madurar.</li>
+            </ol>
+            <p class="deliverable"><strong>Entregable:</strong> diversidad topológica efectiva y medible.</p>
+          </article>
+
+          <article class="phase">
+            <h3>Fase 6 · Eficiencia y protocolo de investigación</h3>
+            <ol>
+              <li>Evaluación multi-fidelity: 1 fold/pocas épocas → top-k a 3 folds → finalistas a 5 folds.</li>
+              <li>Multi-seed de finalistas, intervalos de confianza y comparación pareada.</li>
+              <li>Manifiesto por sujeto y auditoría automática de leakage.</li>
+              <li>Ablaciones: sin residual, sin Inception, sin semillas, sin mutación adaptativa, sin especiación.</li>
+              <li>Generar automáticamente un informe HTML de cada run con configuración, linaje, coste y métricas.</li>
+            </ol>
+            <p class="deliverable"><strong>Entregable:</strong> evidencia publicable y auditable.</p>
+          </article>
+        </div>
+
+        <h3>Arquitecturas conocidas: incorporación recomendada</h3>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Familia</th><th>Uso recomendado</th><th>Genes mutables</th><th>Precaución</th></tr></thead>
+            <tbody>
+              <tr><td>FCN1D</td><td>Baseline simple y semilla barata</td><td>Canales, kernels, dropout</td><td>No confundir con la CNN secuencial actual si cambia la cabeza global.</td></tr>
+              <tr><td>ResNet1D-18/34</td><td>Baseline + semillas residuales</td><td>Anchos, bloques por stage, kernels, downsampling</td><td>Comparar con versión canónica congelada antes de evolucionarla.</td></tr>
+              <tr><td>InceptionTime</td><td>Baseline + semillas multi-escala</td><td>Profundidad, bottleneck, kernels, filtros, residual cadence</td><td>Conservar concatenaciones y canales válidos.</td></tr>
+              <tr><td>CDIL-CNN</td><td>Baseline fuerte y futura familia dilatada</td><td>Dilataciones, kernel, canales, profundidad</td><td>Controlar el campo receptivo y padding causal/no causal.</td></tr>
+              <tr><td>LSTM-FCN</td><td>Baseline híbrido opcional</td><td>Hidden size, capas, dropout, ancho FCN</td><td>Añade una rama recurrente y complica crossover/coste.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="pruebas">
+        <h2>16. Pruebas de aceptación que deben acompañar la ampliación</h2>
+        <div class="grid two">
+          <div class="card">
+            <h3>Unitarias</h3>
+            <ul>
+              <li>Cada bloque conserva o cambia forma exactamente como declara.</li>
+              <li>La proyección residual aparece solo cuando hace falta.</li>
+              <li>Las ramas Inception producen la suma de canales esperada.</li>
+              <li>La firma estable ignora ID/fitness pero distingue topologías.</li>
+              <li>Migración v1→v2 conserva salida y número de parámetros.</li>
+              <li>Mutación y crossover nunca modifican a los padres.</li>
+            </ul>
+          </div>
+          <div class="card">
+            <h3>Integración</h3>
+            <ul>
+              <li>Forward y backward de un batch para cada familia.</li>
+              <li>Una mini evolución con población pequeña y datos sintéticos.</li>
+              <li>Checkpoint v2 guarda/carga y reproduce logits.</li>
+              <li>El test sintético se informa pero no modifica fitness; el test real permanece inaccesible durante fitness y entrenamiento.</li>
+              <li>OOM invalida un individuo sin derribar el run.</li>
+              <li>Reanudación conserva especie, linaje y caché.</li>
+            </ul>
+          </div>
+        </div>
+        <h3>Criterios mínimos de “terminado”</h3>
+        <ol>
+          <li><code>pytest</code> completo en verde en CPU.</li>
+          <li>Smoke test CUDA con un individuo de cada familia.</li>
+          <li>Ningún genoma válido falla por incompatibilidad de forma.</li>
+          <li>Las arquitecturas fuera del presupuesto se rechazan antes de entrenar.</li>
+          <li>La evolución puede reanudarse con el mismo esquema y rechaza esquemas incompatibles.</li>
+          <li>Un run final genera JSON, checkpoint, matrices y resumen de arquitectura sin edición manual.</li>
+        </ol>
+      </section>
+
+      <section id="experimentos">
+        <h2>17. Plan experimental recomendado</h2>
+        <p>La ampliación arquitectónica solo es defendible si las comparaciones mantienen el mismo protocolo y presupuesto.</p>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Experimento</th><th>Pregunta</th><th>Control</th><th>Salida</th></tr></thead>
+            <tbody>
+              <tr><td>Baseline CNN actual</td><td>¿Cuál es el punto de partida?</td><td>Genoma v1, entrenamiento sintético→test real</td><td>F1 real, brecha de dominio y coste.</td></tr>
+              <tr><td>Residual solamente</td><td>¿Ayudan los atajos?</td><td>Mismo presupuesto, sin Inception</td><td>ΔF1, parámetros, tiempo.</td></tr>
+              <tr><td>Inception solamente</td><td>¿Ayuda la multi-escala?</td><td>Mismo presupuesto, sin residual</td><td>ΔF1, estabilidad por fold.</td></tr>
+              <tr><td>Espacio híbrido</td><td>¿La evolución combina bloques útiles?</td><td>Mismas evaluaciones totales</td><td>Familias ganadoras y linaje.</td></tr>
+              <tr><td>Semillas conocidas</td><td>¿Aceleran la convergencia?</td><td>Desde cero vs 10–25% semillas</td><td>Área bajo curva fitness/tiempo.</td></tr>
+              <tr><td>Random search</td><td>¿Aporta valor el algoritmo evolutivo?</td><td>Mismo número de entrenamientos</td><td>Distribución de mejores resultados.</td></tr>
+              <tr><td>Ablación de especiación</td><td>¿Protege diversidad útil?</td><td>On/off con mismas semillas</td><td>Diversidad, F1 y coste.</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <h3>Referencias internas a superar</h3>
+        <p>El repositorio documenta como objetivos externos: accuracy 0,73, sensibilidad 0,82, especificidad 0,76, F1 0,75 y AUC 0,73. Deben tratarse como contexto provisional hasta recuperar sus referencias bibliográficas completas y reproducir los baselines bajo los mismos datos, particiones, semillas y presupuesto.</p>
+      </section>
+
+      <section id="prioridades">
+        <h2>18. Orden de prioridades recomendado</h2>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Orden</th><th>Tarea</th><th>Impacto</th><th>Dependencia</th></tr></thead>
+            <tbody>
+              <tr><td>1</td><td>Dependencias reproducibles + tests verdes</td><td>Base confiable</td><td>Ninguna</td></tr>
+              <tr><td>2</td><td>Single-GPU seguro, LayerNorm y OOM</td><td>Evita fallos caros</td><td>1</td></tr>
+              <tr><td>3</td><td>Caché de fitness + multi-fidelity</td><td>Reduce drásticamente coste</td><td>1–2</td></tr>
+              <tr><td>4</td><td>Genoma v2 basado en bloques</td><td>Habilita todas las topologías</td><td>1–3</td></tr>
+              <tr><td>5</td><td>Residual Conv1D</td><td>Primera ampliación estructural</td><td>4</td></tr>
+              <tr><td>6</td><td>Inception Conv1D / InceptionTime</td><td>Multi-escala temporal</td><td>4–5</td></tr>
+              <tr><td>7</td><td>Baselines y semillas conocidas</td><td>Comparación y convergencia</td><td>4–6</td></tr>
+              <tr><td>8</td><td>Especiación realmente integrada</td><td>Preserva familias raras</td><td>4–7</td></tr>
+              <tr><td>9</td><td>Manifiesto, multi-seed y estadística</td><td>Validez publicable</td><td>Puede avanzar en paralelo organizativo</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="callout good">
+          <strong>Primer incremento aconsejado:</strong> no implementar ResNet e Inception directamente sobre las listas actuales.
+          Primero crear el genoma v2 y el registro de bloques; después añadir residual como bloque mínimo, validar el flujo completo y usar ese patrón para Inception.
+        </div>
+      </section>
+
+      <section id="glosario">
+        <h2>19. Glosario rápido</h2>
+        <div class="grid two">
+          <div class="card"><strong>Genoma</strong><p class="mini">Descripción serializable de arquitectura e hiperparámetros.</p></div>
+          <div class="card"><strong>Individuo</strong><p class="mini">Genoma dentro de una población, junto con fitness, métricas y linaje.</p></div>
+          <div class="card"><strong>Fenotipo</strong><p class="mini">Modelo PyTorch construido a partir del genoma.</p></div>
+          <div class="card"><strong>Fitness</strong><p class="mini">Media del F1 de validation sintética en los cinco folds.</p></div>
+          <div class="card"><strong>Élite</strong><p class="mini">Individuo superior copiado a la siguiente generación sin reentrenar.</p></div>
+          <div class="card"><strong>Innovación</strong><p class="mini">Identificador usado para alinear genes durante crossover.</p></div>
+          <div class="card"><strong>Especie</strong><p class="mini">Grupo de genomas compatibles; existe en helpers pero aún no gobierna el motor.</p></div>
+          <div class="card"><strong>Test sintético</strong><p class="mini">Medición interna separada que no participa en la selección del modelo.</p></div>
+          <div class="card"><strong>Test final real</strong><p class="mini">Única fuente real usada para medir generalización; no actualiza pesos ni checkpoints.</p></div>
+          <div class="card"><strong>Residual</strong><p class="mini">Bloque que suma una ruta aprendida con un atajo de identidad/proyección.</p></div>
+          <div class="card"><strong>Inception</strong><p class="mini">Bloque con ramas paralelas de distintas escalas temporales.</p></div>
+        </div>
+        <a class="top-link" href="#top">↑ Volver arriba</a>
+      </section>
+
+      <footer>
+        Documento técnico de trabajo para tutoría doctoral. Generado a partir del código, pruebas, datos y documentación presentes en <code>G:\Neuroevolution-ipynbs</code> el 22/09/2026.
+      </footer>
+    </main>
+  </div>
+
+  <script>
+    (() => {
+      const links = [...document.querySelectorAll('#toc a')];
+      const sections = links.map(a => document.querySelector(a.getAttribute('href'))).filter(Boolean);
+      const observer = new IntersectionObserver(entries => {
+        const visible = entries.filter(e => e.isIntersecting).sort((a, b) => b.intersectionRatio - a.intersectionRatio)[0];
+        if (!visible) return;
+        links.forEach(a => a.classList.toggle('active', a.getAttribute('href') === '#' + visible.target.id));
+      }, { rootMargin: '-15% 0px -70% 0px', threshold: [0, .1, .4] });
+      sections.forEach(section => observer.observe(section));
+    })();
+  </script>
+</body>
+</html>

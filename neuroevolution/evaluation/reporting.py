@@ -26,7 +26,10 @@ def build_held_out_results_rows(results: Dict[str, Any]) -> List[Dict[str, Any]]
 
     for label, prefix in (("Mean", "mean"), ("Std", "std")):
         row = {"Fold": label}
-        row.update({metric_label: results[f"{prefix}_{metric_key}"] for metric_label, metric_key in METRIC_COLUMNS})
+        row.update({
+            metric_label: results[f"{prefix}_{'f1' if metric_key == 'f1_score' else metric_key}"]
+            for metric_label, metric_key in METRIC_COLUMNS
+        })
         rows.append(row)
     return rows
 
@@ -56,7 +59,7 @@ def plot_fold_confusion_matrices(results: Dict[str, Any]):
     for axis, fold_result in zip(axes[0], fold_results):
         matrix = np.asarray(fold_result["confusion_matrix"])
         image = axis.imshow(matrix, interpolation="nearest", cmap="Blues")
-        axis.set_title(f"Fold {fold_result['fold']} — held-out test")
+        axis.set_title(f"Fold {fold_result['fold']} — real held-out test")
         axis.set_xlabel("Predicted label")
         axis.set_ylabel("True label")
         axis.set_xticks(range(matrix.shape[1]))
