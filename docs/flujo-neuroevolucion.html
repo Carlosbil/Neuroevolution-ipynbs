@@ -20,7 +20,7 @@
     section { margin:36px 0; } .panel { background:linear-gradient(145deg,rgba(25,35,63,.96),rgba(18,26,48,.96)); border:1px solid var(--line); border-radius:16px; padding:23px; box-shadow:0 15px 40px rgba(0,0,0,.17); }
     .legend { display:flex; flex-wrap:wrap; gap:13px; color:var(--muted); font-size:.86rem; margin:14px 0 2px; } .dot { width:10px; height:10px; border-radius:99px; display:inline-block; margin-right:5px; }
     .flow { display:grid; grid-template-columns:repeat(9,minmax(92px,1fr)); gap:8px; align-items:center; margin-top:21px; overflow-x:auto; padding-bottom:8px; }
-    .node { min-height:105px; min-width:110px; padding:12px; border:1px solid var(--line); background:#10182c; border-radius:12px; display:flex; flex-direction:column; justify-content:center; text-align:center; font-size:.83rem; } .node b { font-size:.91rem; } .arrow { color:#6883b8; text-align:center; font-size:1.5rem; } .accent { border-top:4px solid var(--violet); } .orange { border-top:4px solid var(--train); } .blue { border-top:4px solid var(--val); } .green { border-top:4px solid var(--test); } .danger { border-top:4px solid var(--warn); }
+    .node { min-height:105px; min-width:110px; padding:12px; border:1px solid var(--line); background:#10182c; border-radius:12px; display:flex; flex-direction:column; justify-content:center; text-align:center; font-size:.83rem; color:var(--ink); text-decoration:none; transition:transform .18s ease,border-color .18s ease,box-shadow .18s ease,background .18s ease; } .node b { font-size:.91rem; } a.node:hover { transform:translateY(-4px); border-color:var(--val); background:#162343; box-shadow:0 10px 24px rgba(0,0,0,.28); } a.node:focus-visible { outline:3px solid var(--train); outline-offset:3px; } .arrow { color:#6883b8; text-align:center; font-size:1.5rem; } .accent { border-top:4px solid var(--violet); } .orange { border-top:4px solid var(--train); } .blue { border-top:4px solid var(--val); } .green { border-top:4px solid var(--test); } .danger { border-top:4px solid var(--warn); }
     .grid { display:grid; grid-template-columns:repeat(3,1fr); gap:16px; } .grid.two { grid-template-columns:repeat(2,1fr); } .card { background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:18px; } .card p { color:var(--muted); margin-bottom:0; }
     .step { display:grid; grid-template-columns:42px 1fr; gap:14px; padding:17px 0; border-bottom:1px solid var(--line); } .step:last-child { border-bottom:0; padding-bottom:0; } .number { color:var(--bg); background:var(--val); width:32px; height:32px; border-radius:50%; display:grid; place-items:center; font-weight:800; }
     code { color:#d9c8ff; font-family:ui-monospace,SFMono-Regular,Consolas,monospace; font-size:.9em; } ul { padding-left:20px; margin-bottom:0; } li { margin:5px 0; } .tiny { color:var(--muted); font-size:.89rem; }
@@ -28,8 +28,10 @@
     .architecture { display:grid; grid-template-columns:1fr 1fr 1fr; gap:14px; margin-top:18px; } .arch { padding:18px; border-radius:14px; border:1px solid var(--line); background:#10182c; } .arch h3 { display:flex; align-items:center; gap:8px; } .arch h3 span { display:inline-grid; place-items:center; border-radius:6px; width:25px; height:25px; font-size:.74rem; } .seq span { background:#574577; }.res span { background:#80551d; }.inc span { background:#17634a; }
     .lane { border:1px dashed #536a9b; border-radius:8px; padding:8px; color:#cad6ee; margin-top:9px; font:12px/1.45 ui-monospace,SFMono-Regular,Consolas,monospace; }
     .table { width:100%; border-collapse:collapse; margin-top:10px; font-size:.91rem; } .table th,.table td { text-align:left; padding:10px; border-bottom:1px solid var(--line); vertical-align:top; } .table th { color:var(--muted); font-weight:650; } .yes { color:var(--test); font-weight:750; } .no { color:var(--warn); font-weight:750; }
+    .detail-grid { display:grid; grid-template-columns:repeat(2,1fr); gap:16px; } .detail-card { scroll-margin-top:20px; position:relative; } .detail-card.full { grid-column:1/-1; } .detail-card h3 { padding-right:110px; } .flow-back { position:absolute; top:17px; right:17px; color:var(--val); font-size:.8rem; text-decoration:none; } .flow-back:hover,.flow-back:focus-visible { color:var(--train); text-decoration:underline; } .detail-card:target { border-color:var(--val); box-shadow:0 0 0 3px rgba(98,179,255,.22),0 15px 40px rgba(0,0,0,.17); }
+    .codeblock { margin:12px 0 0; padding:14px; overflow:auto; border:1px solid var(--line); border-radius:10px; background:#0d1427; color:#d9c8ff; font:12px/1.55 ui-monospace,SFMono-Regular,Consolas,monospace; white-space:pre; } .table-wrap { overflow-x:auto; } .table caption { padding:4px 0 9px; color:var(--muted); text-align:left; font-weight:650; } .detail-list { margin-top:12px; } .detail-list strong { color:var(--ink); } .callout { margin-top:16px; padding:14px 16px; border-left:4px solid var(--violet); border-radius:8px; background:rgba(185,151,255,.08); color:var(--muted); } .callout strong { color:#dccdff; }
     footer { color:var(--muted); font-size:.83rem; border-top:1px solid var(--line); padding-top:18px; margin-top:46px; }
-    @media (max-width:850px) { .grid,.grid.two,.architecture { grid-template-columns:1fr; } .flow { grid-template-columns:1fr; max-width:400px; margin:auto; } .arrow { transform:rotate(90deg); } .split { grid-template-columns:1fr; } .split-arrow { transform:rotate(90deg); } }
+    @media (max-width:850px) { .grid,.grid.two,.architecture,.detail-grid { grid-template-columns:1fr; } .detail-card.full { grid-column:auto; } .flow { grid-template-columns:1fr; max-width:400px; margin:auto; } .arrow { transform:rotate(90deg); } .split { grid-template-columns:1fr; } .split-arrow { transform:rotate(90deg); } }
   </style>
 </head>
 <body>
@@ -38,7 +40,7 @@
     <div class="eyebrow">Mapa estático del repositorio · estado actual</div>
     <h1>Cómo se ejecuta la búsqueda neuroevolutiva</h1>
     <p class="lead">Recorrido de <code>test.ipynb</code>: el bucle genético usa ficheros sintéticos y, tras seleccionar el genoma, la evaluación final lo reentrena y mide exclusivamente con ficheros reales.</p>
-    <nav class="nav"><a href="#flujo">Flujo alto nivel</a><a href="#datos">Datos</a><a href="#pasos">Paso a paso</a><a href="#arquitecturas">Arquitecturas</a><a href="#estado">Estado actual</a></nav>
+    <nav class="nav"><a href="#flujo">Flujo alto nivel</a><a href="#detalle-flujo">Detalle del flujo</a><a href="#espacio-busqueda">Individuos posibles</a><a href="#datos">Datos</a><a href="#pasos">Paso a paso</a><a href="#arquitecturas">Arquitecturas</a><a href="#estado">Estado actual</a></nav>
   </header>
 
   <aside class="notice" id="estado">
@@ -49,16 +51,133 @@
     <h2>Diagrama de flujo de alto nivel</h2>
     <div class="legend"><span><i class="dot" style="background:var(--train)"></i>entrenamiento</span><span><i class="dot" style="background:var(--val)"></i>validación / selección</span><span><i class="dot" style="background:var(--test)"></i>test retenido</span></div>
     <div class="flow">
-      <div class="node accent"><b>test.ipynb</b><span>semilla, dispositivo y CONFIG</span></div><div class="arrow">→</div>
-      <div class="node blue"><b>Cargar 5 folds</b><span>arrays sintéticos N</span></div><div class="arrow">→</div>
-      <div class="node accent"><b>Población</b><span>genomas y topología</span></div><div class="arrow">→</div>
-      <div class="node orange"><b>Evaluar genoma</b><span>5 folds en paralelo</span></div><div class="arrow">→</div>
-      <div class="node blue"><b>Fitness</b><span>F1 de validación</span></div><div class="arrow">→</div>
-      <div class="node accent"><b>Pareto + genética</b><span>élite, cruce, mutación</span></div><div class="arrow">→</div>
-      <div class="node green"><b>5-fold final</b><span>test solo al final</span></div>
+      <a class="node accent" href="#detalle-notebook" aria-label="Ver detalle de test.ipynb"><b>test.ipynb</b><span>semilla, dispositivo y CONFIG</span></a><div class="arrow" aria-hidden="true">→</div>
+      <a class="node blue" href="#detalle-folds" aria-label="Ver detalle de la carga de folds"><b>Cargar 5 folds</b><span>arrays sintéticos N</span></a><div class="arrow" aria-hidden="true">→</div>
+      <a class="node accent" href="#detalle-poblacion" aria-label="Ver detalle de la población"><b>Población</b><span>genomas y topología</span></a><div class="arrow" aria-hidden="true">→</div>
+      <a class="node orange" href="#detalle-evaluacion" aria-label="Ver detalle de la evaluación de un genoma"><b>Evaluar genoma</b><span>5 folds en paralelo</span></a><div class="arrow" aria-hidden="true">→</div>
+      <a class="node blue" href="#detalle-fitness" aria-label="Ver detalle de la fitness"><b>Fitness</b><span>F1 de validación</span></a><div class="arrow" aria-hidden="true">→</div>
+      <a class="node accent" href="#detalle-genetica" aria-label="Ver detalle de Pareto y genética"><b>Pareto + genética</b><span>élite, cruce, mutación</span></a><div class="arrow" aria-hidden="true">→</div>
+      <a class="node green" href="#detalle-final" aria-label="Ver detalle de la evaluación final de cinco folds"><b>5-fold final</b><span>test solo al final</span></a>
     </div>
     <p class="tiny" style="margin:18px 0 0">El bloque naranja contiene un bucle: por cada generación se evalúan los genomas, se ordenan por los objetivos Pareto y se crea la siguiente población hasta alcanzar el umbral o el límite de generaciones.</p>
   </div></section>
+
+  <section id="detalle-flujo" aria-labelledby="detalle-flujo-titulo">
+    <h2 id="detalle-flujo-titulo">Detalle de cada bloque del diagrama</h2>
+    <p class="lead">Pulsa cualquier bloque del flujo para llegar aquí. Cada etapa prepara la siguiente y mantiene el conjunto de test fuera de las decisiones de búsqueda.</p>
+    <div class="detail-grid">
+      <article class="card detail-card" id="detalle-notebook">
+        <a class="flow-back" href="#flujo">↑ Ver flujo</a>
+        <h3>1. test.ipynb: orquestación</h3>
+        <p>El notebook es el punto de entrada. Fija una semilla reproducible, detecta el dispositivo de cálculo y carga <code>CONFIG</code>. Con esos valores construye el experimento, inicia la evolución y conserva los artefactos necesarios para revisar qué se ejecutó.</p>
+      </article>
+      <article class="card detail-card" id="detalle-folds">
+        <a class="flow-back" href="#flujo">↑ Ver flujo</a>
+        <h3>2. Carga de los cinco folds</h3>
+        <p>Para el bucle evolutivo se cargan cinco particiones sintéticas desde <code>files_syn_all_N</code>. Cada una ofrece sus subconjuntos de train y validation: train actualiza pesos; validation compara modelos y checkpoints. Los arrays de test no participan en esta fase.</p>
+      </article>
+      <article class="card detail-card" id="detalle-poblacion">
+        <a class="flow-back" href="#flujo">↑ Ver flujo</a>
+        <h3>3. Población inicial</h3>
+        <p><code>HybridNeuroevolution</code> crea candidatos aleatorios y candidatos basados en plantillas. Un genoma codifica la arquitectura Conv1D y sus hiperparámetros: filtros, kernels, normalización, activaciones, dropout, capas densas, optimizador y learning rate. Consulta <a href="#espacio-busqueda">el espacio de búsqueda y los ejemplos de individuos</a> para ver qué puede salir realmente.</p>
+      </article>
+      <article class="card detail-card" id="detalle-evaluacion">
+        <a class="flow-back" href="#flujo">↑ Ver flujo</a>
+        <h3>4. Evaluación de un genoma</h3>
+        <p>El genoma se valida y se convierte en un modelo PyTorch nuevo. En cada fold se entrena solamente con train, se guarda el checkpoint que mejor rinde en validation y se registran métrica, tiempo y número de parámetros. Se pueden ejecutar hasta cinco folds en paralelo.</p>
+      </article>
+      <article class="card detail-card" id="detalle-fitness">
+        <a class="flow-back" href="#flujo">↑ Ver flujo</a>
+        <h3>5. Fitness de validación</h3>
+        <p>La fitness es la media del F1 de validation en los cinco folds. F1 equilibra precisión y sensibilidad, por lo que es más adecuada que accuracy cuando las clases pueden estar desbalanceadas. Esta puntuación guía la búsqueda; no es todavía un resultado final independiente.</p>
+      </article>
+      <article class="card detail-card" id="detalle-genetica">
+        <a class="flow-back" href="#flujo">↑ Ver flujo</a>
+        <h3>6. Pareto y operadores genéticos</h3>
+        <p>Los candidatos se ordenan con varios objetivos: maximizar F1 y reducir tiempo de evaluación y parámetros. La siguiente generación conserva élites y combina cruce, mutación, especiación y crecimiento incremental. El ciclo se repite hasta el criterio de parada.</p>
+      </article>
+      <article class="card detail-card full" id="detalle-final">
+        <a class="flow-back" href="#flujo">↑ Ver flujo</a>
+        <h3>7. Evaluación final retenida</h3>
+        <p>Una vez fijado el genoma ganador, <code>evaluate_5fold_cross_validation()</code> cambia a los archivos reales <code>files_real_N</code>. Para cada fold reconstruye el modelo desde cero, entrena con train real, selecciona el checkpoint con validation real y mide una sola vez en test real. Así, el test produce las métricas finales sin haber influido en el diseño.</p>
+      </article>
+    </div>
+  </section>
+
+  <section id="espacio-busqueda" aria-labelledby="espacio-busqueda-titulo">
+    <h2 id="espacio-busqueda-titulo">Qué individuos puede generar la búsqueda</h2>
+    <p class="lead">Un individuo no es un modelo ya entrenado: es una receta de arquitectura e hiperparámetros. Al evaluarlo, se instancia un <code>EvolvableCNN</code> nuevo y sus pesos se aprenden desde cero en cada fold.</p>
+    <div class="panel">
+      <h3>Qué contiene un genoma</h3>
+      <pre class="codeblock" aria-label="Estructura simplificada de un genoma">{
+  conv_topology: sequential | residual | inception,
+  num_conv_layers: 1..11,    filters: [8..256, ...],
+  kernel_sizes: [3 | 5 | 7 | 9 | 11 | 13 | 15, ...],
+  num_fc_layers: 1..4,       fc_nodes: [64..768, ...],
+  activations: [relu | leaky_relu | tanh | sigmoid | selu, ...],
+  normalization_type: batch | layer,
+  dropout_rate: 0.10..0.50,
+  optimizer: adam | adamw | sgd | rmsprop,
+  learning_rate: 1e-3 | 5e-4 | 2e-4 | 1e-4 | 5e-5 | 1e-5,
+  ...campos propios de la topología residual o Inception
+}</pre>
+      <p class="callout"><strong>Restricción importante:</strong> los límites son de la configuración activa. Antes de entrenar, el validador ajusta o descarta estructuras que no sean válidas para una entrada de 11&nbsp;520 muestras; no todo cromosoma teórico llega a convertirse en modelo.</p>
+    </div>
+
+    <div class="grid two">
+      <article class="card">
+        <h3>Individuo aleatorio</h3>
+        <p>El generador escoge una de las tres topologías y crea listas de capas compatibles. Al inicio, los filtros tienden a crecer por profundidad —por ejemplo, <code>[16, 32, 64]</code>— y las capas densas a decrecer. Tras mutaciones, cada ancho puede variar de forma independiente dentro de los límites.</p>
+        <ul class="detail-list">
+          <li><strong>Secuencial:</strong> cada Conv1D se sigue de normalización, activación, MaxPool y dropout intermedio.</li>
+          <li><strong>Residual:</strong> agrupa 2 o 3 convoluciones y añade un atajo; aplica proyección 1×1 automáticamente cuando cambian los canales.</li>
+          <li><strong>Inception:</strong> crea ramas con kernels pequeños y anchos, más una rama de pooling opcional, y concatena sus canales.</li>
+        </ul>
+      </article>
+      <article class="card">
+        <h3>Cómo se forma la población de 64</h3>
+        <p>La configuración reserva 63 plazas regulares y una plaza adicional con el doble de los límites iniciales. De las 63 regulares, el 15&nbsp;% se intenta sembrar con plantillas conocidas: son <strong>9 semillas</strong> nominales, intercaladas entre individuos aleatorios. Si una plantilla no es válida bajo los límites actuales, su plaza se rellena aleatoriamente.</p>
+        <p>Las plazas regulares se distribuyen en cuatro rangos de profundidad con topes Conv de 3, 6, 9 y 11 capas, y topes FC de 1, 2, 3 y 4 capas. Por tanto, la población inicial ya cubre modelos pequeños y profundos; no son 64 variantes de una sola CNN.</p>
+      </article>
+    </div>
+
+    <section aria-labelledby="ejemplos-titulo">
+      <h3 id="ejemplos-titulo" style="margin-top:24px">Ejemplos ilustrativos de individuos válidos</h3>
+      <div class="grid">
+        <article class="card"><h3>A. CNN compacta</h3><p><code>sequential</code> · Conv: <code>[16, 32, 64]</code> · kernels: <code>[9, 7, 5]</code> · FC: <code>[256, 128]</code> · BatchNorm · ReLU/SELU · dropout 0,25 · AdamW · LR 0,0002.</p></article>
+        <article class="card"><h3>B. Residual profunda</h3><p><code>residual</code> · 6 Conv agrupadas en bloques de 2 · filtros: <code>[16, 16, 32, 32, 64, 64]</code> · kernel 3 · proyección automática · FC: <code>[128]</code> · LayerNorm · SGD · LR 0,0005.</p></article>
+        <article class="card"><h3>C. Inception multiescala</h3><p><code>inception</code> · 4 módulos · filtros: <code>[24, 48, 96, 128]</code> · kernels anchos: <code>[5, 7, 9, 11]</code> · ratio de reducción 0,25 · rama pooling activa · FC: <code>[256, 64]</code> · Adam · LR 0,0001.</p></article>
+      </div>
+      <p class="tiny">Son ejemplos explicativos, no resultados del experimento ni arquitecturas garantizadas. Cada uno debe superar la validación de dimensiones y puede competir contra alternativas de coste y F1 muy distintos.</p>
+    </section>
+
+    <section aria-labelledby="topologias-titulo">
+      <h3 id="topologias-titulo" style="margin-top:24px">Probabilidad de topología y campos específicos</h3>
+      <div class="table-wrap"><table class="table"><thead><tr><th>Topología activa</th><th>Peso al crear un genoma aleatorio</th><th>Campos que decide el genoma</th><th>Qué no se combina</th></tr></thead><tbody>
+        <tr><td>Secuencial</td><td>0,45</td><td>Capas, filtros, kernels, activaciones y clasificación final.</td><td>No hay atajo residual ni ramas Inception.</td></tr>
+        <tr><td>Residual</td><td>0,30</td><td>Tamaño de bloque: 2 o 3; proyección: <code>auto</code>.</td><td>No se activa Inception a la vez.</td></tr>
+        <tr><td>Inception</td><td>0,25</td><td>Ratio de reducción: 0,25 o 0,5; rama de pooling: sí o no.</td><td>No se activa residual a la vez.</td></tr>
+      </tbody></table></div>
+      <p class="tiny">Los pesos se usan al muestrear individuos aleatorios. Cruce, mutación y las plantillas pueden cambiar la proporción observada en generaciones posteriores.</p>
+    </section>
+
+    <section aria-labelledby="plantillas-titulo">
+      <h3 id="plantillas-titulo" style="margin-top:24px">Arquitecturas conocidas: qué sí se usa</h3>
+      <p>El proyecto incluye nueve <em>plantillas</em> inspiradas en familias conocidas. No importa modelos externos, pesos preentrenados ni una implementación literal de LeNet, AlexNet, VGG, ResNet o GoogLeNet: convierte sus patrones a Conv1D y los mete en el mismo genoma mutable que el resto.</p>
+      <div class="table-wrap"><table class="table"><caption>Plantillas configuradas y su patrón Conv1D base</caption><thead><tr><th>Familia</th><th>Topología</th><th>Conv (filtros; kernels)</th><th>Capas FC</th></tr></thead><tbody>
+        <tr><td>LeNet tiny</td><td>Secuencial</td><td>2 · <code>[6, 12]</code>; <code>[5, 5]</code></td><td>1 · <code>[12]</code></td></tr>
+        <tr><td>AlexNet small</td><td>Secuencial</td><td>3 · <code>[8, 12, 16]</code>; <code>[7, 5, 3]</code></td><td>2 · <code>[16, 8]</code></td></tr>
+        <tr><td>VGG small</td><td>Secuencial</td><td>4 · <code>[8, 8, 16, 16]</code>; <code>[3, 3, 3, 3]</code></td><td>1 · <code>[16]</code></td></tr>
+        <tr><td>ResNet small / medium</td><td>Residual</td><td>4 o 6 · patrones de kernel 3; bloques de 2</td><td>1 o 2</td></tr>
+        <tr><td>Wide ResNet small</td><td>Residual</td><td>4 · <code>[12, 12, 16, 16]</code>; kernel 3</td><td>1</td></tr>
+        <tr><td>GoogLeNet Inception small / medium</td><td>Inception</td><td>3 o 4 · kernels 5 y 7; reducción 0,5</td><td>1 o 2</td></tr>
+        <tr><td>Inception wide</td><td>Inception</td><td>3 · <code>[12, 16, 16]</code>; <code>[5, 7, 9]</code>; reducción 0,25</td><td>1</td></tr>
+      </tbody></table></div>
+      <p class="tiny">Las cifras de la tabla describen la plantilla antes de normalizarla. El validador la ajusta a los límites globales: por ejemplo, ningún filtro queda por debajo de 8 y ninguna capa FC por debajo de 64 nodos. Además, una semilla puede acortarse si cae en un rango inicial de menor profundidad.</p>
+    </section>
+
+    <div class="notice" style="margin-top:24px"><strong>Fuera del espacio actual:</strong> no se generan RNN, LSTM/GRU, Transformers, convoluciones 2D/3D, Attention, ni modelos preentrenados. La búsqueda se limita a clasificadores Conv1D con una de las tres topologías descritas y una cabeza fully-connected.</div>
+  </section>
 
   <section id="datos">
     <h2>Datos: train, validation y test</h2>
