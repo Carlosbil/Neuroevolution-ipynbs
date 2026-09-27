@@ -5,6 +5,7 @@ Provides default CONFIG dictionary and validation functions.
 """
 
 import os
+import numpy as np
 import torch.nn as nn
 import torch.optim as optim
 
@@ -22,6 +23,54 @@ SUPPORTED_METRIC_NAMES = {
     'f1_score',
     'auc',
 }
+
+VOWELS_INPUTS = {
+    'audio': {'array_directory': 'arrays_audio', 'batch_size': 2, 'pre_fc_pool_length': 64},
+    'spectrogram': {'array_directory': 'arrays', 'batch_size': 8, 'pre_fc_pool_shape': (4, 8)},
+}
+
+
+def configure_vowels_input(config: dict, dataset_root: str) -> dict:
+    """Bind the selected audio waveform or log-mel input to the existing pipeline."""
+    modality = str(config.get('input_modality', 'audio')).strip().lower()
+    # Preserve notebooks configured with the earlier name.
+    if modality == 'image':
+        modality = 'spectrogram'
+    if modality not in VOWELS_INPUTS:
+        raise ValueError(f"input_modality must be one of: {', '.join(VOWELS_INPUTS)}")
+    choice = VOWELS_INPUTS[modality]
+    array_directory = choice['array_directory']
+    first_fold = os.path.join(dataset_root, array_directory, 'X_train_vowels_fold_1.npy')
+    if not os.path.isfile(first_fold):
+        raise FileNotFoundError(f"Run vowels_dataset_por_persona.ipynb first: {first_fold}")
+    shape = np.load(first_fold, mmap_mode='r').shape
+    if len(shape) != 3 or shape[0] != 840:
+        raise ValueError(f"Unexpected vowels fold shape: {shape}")
+    expected_tail = (1, 286_650) if modality == 'audio' else (64, 648)
+    if tuple(shape[1:]) != expected_tail:
+        raise ValueError(f"Unexpected {modality} input shape: {shape}; expected (840, *{expected_tail})")
+
+    config.update({
+        'input_modality': modality,
+        'data_path': os.fspath(dataset_root),
+        'dataset_id': 'vowels',
+        'evolution_dataset_id': 'vowels',
+        'final_dataset_id': 'vowels',
+        'fold_files_subdirectory': array_directory,
+        'evolution_fold_files_subdirectory': array_directory,
+        'final_fold_files_subdirectory': array_directory,
+        'num_folds': 5,
+        'num_channels': int(shape[1]) if modality == 'audio' else 1,
+        'num_frequency_bins': None if modality == 'audio' else int(shape[1]),
+        'sequence_length': int(shape[2]),
+        'batch_size': choice['batch_size'],
+        'fold_parallel_workers': 1,
+        'pre_fc_pool_length': choice.get('pre_fc_pool_length'),
+        'pre_fc_pool_shape': choice.get('pre_fc_pool_shape'),
+        'fold_cache_mode': 'none' if modality == 'audio' else 'ram',
+        'max_model_parameters': 20_000_000,
+    })
+    return config
 
 
 def canonical_metric_name(metric_name: str) -> str:
@@ -124,6 +173,12 @@ def get_default_config(info_path: str = None) -> dict:
         
         # Dataset selection
         'dataset': 'AUDIO',
+        # Choose 'audio' (PCM waveform, Conv1D) or 'spectrogram' (log-mel, Conv2D)
+        # before calling configure_vowels_input. Audio is the default.
+        'input_modality': 'audio',
+        'pre_fc_pool_length': None,
+        'pre_fc_pool_shape': None,
+        'num_frequency_bins': None,
         
         # Dataset parameters for audio
         'num_channels': 1,
@@ -341,6 +396,17 @@ def validate_config(config: dict) -> None:
         raise ValueError("Invalid FC node bounds")
     
     # Dataset parameters
+    modality = config.get('input_modality')
+    if modality is not None and modality not in {*VOWELS_INPUTS, 'image'}:
+        raise ValueError(f"input_modality must be one of: {', '.join(VOWELS_INPUTS)}")
+    pool_length = config.get('pre_fc_pool_length')
+    if pool_length is not None and int(pool_length) < 1:
+        raise ValueError('pre_fc_pool_length must be positive or None')
+    pool_shape = config.get('pre_fc_pool_shape')
+    if pool_shape is not None and (len(pool_shape) != 2 or any(int(axis) < 1 for axis in pool_shape)):
+        raise ValueError('pre_fc_pool_shape must contain two positive dimensions')
+    if modality in {'spectrogram', 'image'} and int(config.get('num_frequency_bins') or 0) < 4:
+        raise ValueError('Spectrogram mode needs at least four frequency bins')
     if config['num_channels'] < 1:
         raise ValueError("num_channels must be at least 1")
     if config['num_classes'] < 2:

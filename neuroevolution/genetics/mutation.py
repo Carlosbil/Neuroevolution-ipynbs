@@ -8,6 +8,7 @@ import uuid
 from neuroevolution.config import ACTIVATION_FUNCTIONS, OPTIMIZERS
 from neuroevolution.genetics.architecture_templates import apply_template_module_to_genome
 from neuroevolution.models.genome_validator import (
+    architecture_spatial_limit,
     calculate_max_safe_conv_layers,
     is_genome_valid,
     validate_and_fix_genome,
@@ -220,7 +221,7 @@ def mutate_genome(genome: dict, config: dict) -> dict:
 
         # Also enforce architecture safety with sequence length. Residual mode
         # pools per block, so it has its own safe depth.
-        sequence_length = config['sequence_length']
+        sequence_length = architecture_spatial_limit(config)
         min_required_length = 4
         max_safe_conv_layers = calculate_max_safe_conv_layers(
             sequence_length,
@@ -315,7 +316,7 @@ def mutate_genome(genome: dict, config: dict) -> dict:
 
     safe_genome = validate_and_fix_genome(safe_genome, config)
     safe_max_conv = calculate_max_safe_conv_layers(
-        config['sequence_length'],
+        architecture_spatial_limit(config),
         min_required_length=4,
         residual_enabled=safe_genome.get('residual_enabled', False),
         residual_block_size=safe_genome.get('residual_block_size', 2),

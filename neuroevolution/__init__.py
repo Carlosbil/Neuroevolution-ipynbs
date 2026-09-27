@@ -23,7 +23,7 @@ from .logger import setup_notebook_logging, verify_dependencies, install_package
 from .data.loader import load_dataset
 
 # Model components
-from .models.evolvable_cnn import EvolvableCNN
+from .models.evolvable_cnn import EvolvableCNN, EvolvableCNN1D, EvolvableCNN2D
 from .models.architecture_formatting import format_genome_architecture
 from .models.genome_validator import (
     calculate_pooling_operation_count,
@@ -110,6 +110,8 @@ __all__ = [
     "load_dataset",
     # Models
     "EvolvableCNN",
+    "EvolvableCNN1D",
+    "EvolvableCNN2D",
     "format_genome_architecture",
     "is_genome_valid",
     "normalize_residual_fields",

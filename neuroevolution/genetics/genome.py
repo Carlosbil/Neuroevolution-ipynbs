@@ -6,6 +6,7 @@ import random
 import uuid
 from neuroevolution.config import ACTIVATION_FUNCTIONS, OPTIMIZERS
 from neuroevolution.models.genome_validator import (
+    architecture_spatial_limit,
     calculate_max_safe_conv_layers,
     is_genome_valid,
     validate_and_fix_genome,
@@ -66,7 +67,7 @@ def create_random_genome(config: dict) -> dict:
         # Calculate maximum safe conv layers based on sequence length and
         # selected topology. Residual mode pools per block, so deeper stacks can
         # still be safe.
-        sequence_length = config['sequence_length']
+        sequence_length = architecture_spatial_limit(config)
         min_required_length = 4
         max_safe_conv_layers = calculate_max_safe_conv_layers(
             sequence_length,

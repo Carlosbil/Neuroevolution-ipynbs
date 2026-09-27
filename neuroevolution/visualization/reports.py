@@ -37,8 +37,15 @@ def display_best_architecture(
         neuroevolution: HybridNeuroevolution instance.
         execution_time: Optional execution time metadata.
     """
+    is_spectrogram = str(config.get('input_modality', 'audio')).lower() in {'spectrogram', 'image'}
+    dimension = '2D' if is_spectrogram else '1D'
+    data_name = 'spectrogram' if is_spectrogram else 'audio'
+    input_description = (
+        f"Spectrogram ({config['num_frequency_bins']} frequency bins x {config['sequence_length']} frames)"
+        if is_spectrogram else f"1D Audio Signal (length={config['sequence_length']})"
+    )
     print("=" * 60)
-    print("    BEST EVOLVED ARCHITECTURE (1D AUDIO)")
+    print(f"    BEST EVOLVED ARCHITECTURE ({dimension} {data_name.upper()})")
     print("=" * 60)
 
     print("\nGENERAL INFORMATION:")
@@ -54,8 +61,8 @@ def display_best_architecture(
         print(f"   Template Origin: {best_genome.get('architecture_template_origin', 'N/A')}")
 
     print("\nNETWORK ARCHITECTURE:")
-    print(f"   Input: 1D Audio Signal (length={config['sequence_length']})")
-    print(f"   Convolutional Layers (Conv1D): {best_genome['num_conv_layers']}")
+    print(f"   Input: {input_description}")
+    print(f"   Convolutional Layers (Conv{dimension}): {best_genome['num_conv_layers']}")
     print(f"   Fully Connected Layers: {best_genome['num_fc_layers']}")
     print(f"   Residual Enabled: {best_genome.get('residual_enabled', False)}")
     if best_genome.get("residual_enabled", False):
@@ -67,7 +74,7 @@ def display_best_architecture(
         print(f"   Inception Pool Branch: {best_genome.get('inception_pool_branch', True)}")
     print(f"   Output: {config['num_classes']} classes")
 
-    print("\nCONVOLUTIONAL LAYER DETAILS (1D):")
+    print(f"\nCONVOLUTIONAL LAYER DETAILS ({dimension}):")
     residual_enabled = best_genome.get("residual_enabled", False)
     residual_block_size = best_genome.get("residual_block_size", 2)
     inception_enabled = best_genome.get("inception_enabled", False)
@@ -77,7 +84,7 @@ def display_best_architecture(
         filters = best_genome["filters"][i]
         kernel = best_genome["kernel_sizes"][i]
         activation = best_genome["activations"][i % len(best_genome["activations"])]
-        print(f"   Conv1D-{i+1}: {filters} filters, kernel_size={kernel}, activation={activation}")
+        print(f"   Conv{dimension}-{i+1}: {filters} filters, kernel_size={kernel}, activation={activation}")
         if inception_enabled:
             branch_channels = calculate_inception_branch_channels(
                 filters,
@@ -86,17 +93,17 @@ def display_best_architecture(
             )
             print(
                 f"             -> Inception branches {branch_channels}; "
-                f"medium kernel=3, wide kernel={kernel}, MaxPool1D(2) after module"
+                f"medium kernel=3, wide kernel={kernel}, MaxPool{dimension}(2) after module"
             )
         elif residual_enabled:
             block_number = (i // residual_block_size) + 1
             block_position = (i % residual_block_size) + 1
             print(
                 f"             -> Residual block {block_number}, unit {block_position}; "
-                "MaxPool1D(2) after block"
+                f"MaxPool{dimension}(2) after block"
             )
         else:
-            print(f"             -> BatchNorm1D -> {activation.upper()} -> MaxPool1D(2)")
+            print(f"             -> BatchNorm{dimension} -> {activation.upper()} -> MaxPool{dimension}(2)")
 
     print("\nFULLY CONNECTED LAYER DETAILS:")
     for i, nodes in enumerate(best_genome["fc_nodes"]):
@@ -132,16 +139,16 @@ def display_best_architecture(
     print(f"{'='*80}")
     print(f"{'ID':<25} {best_genome['id']:<30} {'Unique identifier':<25}")
     print(f"{'Fitness':<25} {best_genome['fitness']:.2f}%{'':<25} {'Validation fitness':<25}")
-    print(f"{'Architecture':<25} {_format_architecture(best_genome):<30} {'1D Convolutional':<25}")
+    print(f"{'Architecture':<25} {_format_architecture(best_genome):<30} {f'{dimension} Convolutional':<25}")
     if best_genome.get("architecture_template_id"):
         print(f"{'Template':<25} {best_genome.get('architecture_template_id'):<30} {'Known architecture seed':<25}")
         print(f"{'Template Family':<25} {best_genome.get('architecture_template_family', 'N/A'):<30} {'Template lineage':<25}")
-    print(f"{'Conv Layers':<25} {best_genome['num_conv_layers']:<30} {'Conv1D layers':<25}")
-    print(f"{'Residual':<25} {str(best_genome.get('residual_enabled', False)):<30} {'Residual Conv1D blocks':<25}")
+    print(f"{'Conv Layers':<25} {best_genome['num_conv_layers']:<30} {f'Conv{dimension} layers':<25}")
+    print(f"{'Residual':<25} {str(best_genome.get('residual_enabled', False)):<30} {f'Residual Conv{dimension} blocks':<25}")
     if best_genome.get("residual_enabled", False):
         print(f"{'Residual Block Size':<25} {best_genome.get('residual_block_size', 2):<30} {'Conv units per block':<25}")
         print(f"{'Residual Projection':<25} {best_genome.get('residual_projection', 'auto'):<30} {'Shortcut projection':<25}")
-    print(f"{'Inception':<25} {str(best_genome.get('inception_enabled', False)):<30} {'Inception Conv1D modules':<25}")
+    print(f"{'Inception':<25} {str(best_genome.get('inception_enabled', False)):<30} {f'Inception Conv{dimension} modules':<25}")
     if best_genome.get("inception_enabled", False):
         print(f"{'Inception Reduction':<25} {best_genome.get('inception_reduction_ratio', 0.5):<30} {'1x1 reduction ratio':<25}")
         print(f"{'Inception Pool Branch':<25} {str(best_genome.get('inception_pool_branch', True)):<30} {'Pooling branch':<25}")
@@ -149,7 +156,8 @@ def display_best_architecture(
     print(f"{'Optimizer':<25} {best_genome['optimizer']:<30} {'Optimization algorithm':<25}")
     print(f"{'Learning Rate':<25} {best_genome['learning_rate']:<30.6f} {'Learning rate':<25}")
     print(f"{'Dropout':<25} {best_genome['dropout_rate']:<30} {'Dropout rate':<25}")
-    print(f"{'Input Length':<25} {config['sequence_length']:<30} {'Audio sequence length':<25}")
+    input_length_label = 'Spectrogram time frames' if is_spectrogram else 'Audio sequence length'
+    print(f"{'Input Length':<25} {config['sequence_length']:<30} {input_length_label:<25}")
     print(f"{'Classes':<25} {config['num_classes']:<30} {'Binary classification':<25}")
     print(f"{'='*80}")
 
@@ -163,12 +171,12 @@ def display_best_architecture(
     print(f"   Generations used: {neuroevolution.generation}/{config['max_generations']}")
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    results_file = f"best_architecture_audio_{timestamp}.json"
+    results_file = f"best_architecture_{data_name}_{timestamp}.json"
 
     results_data = {
         "timestamp": timestamp,
         "execution_time": str(execution_time),
-        "dataset_type": "audio_1D",
+        "dataset_type": f"{data_name}_{dimension}",
         "dataset_id": config.get("dataset_id", "N/A"),
         "fold": config.get("current_fold", "N/A"),
         "config_used": {k: v for k, v in config.items() if not k.startswith("_")},
@@ -185,7 +193,7 @@ def display_best_architecture(
         print(f"\n✗ WARNING: Error saving results: {e}")
 
     print(f"\n{'='*60}")
-    print("HYBRID NEUROEVOLUTION FOR AUDIO COMPLETED!")
+    print(f"HYBRID NEUROEVOLUTION FOR {data_name.upper()} COMPLETED!")
     print(f"{'='*60}")
 
 

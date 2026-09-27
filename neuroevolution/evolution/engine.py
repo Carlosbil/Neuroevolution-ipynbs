@@ -37,6 +37,7 @@ from ..genetics.selection import (
 from ..genetics.innovation import build_innovation_genes, append_structural_event
 from ..models.architecture_formatting import format_genome_architecture
 from ..models.genome_validator import (
+    architecture_spatial_limit,
     calculate_max_safe_conv_layers,
     estimate_genome_parameter_count,
     validate_and_fix_genome,
@@ -250,7 +251,7 @@ class HybridNeuroevolution:
         """Returns safe conv depth for a genome's current topology."""
         fixed = validate_and_fix_genome(copy.deepcopy(genome), self.config)
         return calculate_max_safe_conv_layers(
-            self.config['sequence_length'],
+            architecture_spatial_limit(self.config),
             min_required_length=4,
             residual_enabled=fixed.get('residual_enabled', False),
             residual_block_size=fixed.get('residual_block_size', 2),
