@@ -145,7 +145,7 @@ def get_default_config(info_path: str = None) -> dict:
         # Each fold is independent, so all five can train concurrently on CUDA.
         # Search-quality preset: more independent candidates and a long enough
         # horizon for speciation and incremental growth to produce useful variants.
-        'population_size': 64,
+        'population_size': 20,
         'max_generations': 250,
         'fitness_threshold': 100.0,
         
