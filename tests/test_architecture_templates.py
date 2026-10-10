@@ -4,7 +4,7 @@ import random
 import pytest
 import torch
 
-from neuroevolution.config import get_default_config, validate_config
+from neuroevolution.config import get_default_config, validate_config, REFERENCE_ARCHITECTURE_IDS
 from neuroevolution.evaluation.cross_validation import _format_architecture as format_cv_architecture
 from neuroevolution.evolution.engine import HybridNeuroevolution
 from neuroevolution.genetics.architecture_templates import (
@@ -40,6 +40,10 @@ def small_config(**overrides):
     config = get_default_config()
     config.update(
         {
+            "input_modality": "audio",
+            "num_frequency_bins": None,
+            "pre_fc_pool_shape": None,
+            "pre_fc_pool_length": None,
             "population_size": 6,
             "sequence_length": 64,
             "num_channels": 1,
@@ -106,7 +110,7 @@ def test_template_registry_filters_configured_ids_and_rejects_unknown_templates(
     assert registry["googlenet_inception_conv1d_small"].conv_topology == "inception"
 
     default_config = get_default_config()
-    assert default_config["architecture_template_ids"] == EXPANDED_DEFAULT_TEMPLATE_IDS
+    assert default_config["architecture_template_ids"] == list(REFERENCE_ARCHITECTURE_IDS)
 
     config = small_config(architecture_template_ids=["resnet_conv1d_small"])
     configured = get_configured_templates(config)

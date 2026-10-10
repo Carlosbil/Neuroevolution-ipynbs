@@ -30,6 +30,8 @@ from ..evolution.fitness import (
 )
 from ..models.architecture_formatting import format_genome_architecture
 from ..models.evolvable_cnn import EvolvableCNN
+from ..models.reference_architectures import classification_loss
+from ..config import make_optimizer, config_value, configured_epochs
 
 
 def _format_architecture(genome: dict) -> str:
@@ -134,7 +136,7 @@ def _evaluate_single_fold_legacy(
     fold_test_loader: torch.utils.data.DataLoader,
     fold_num: int,
     device: torch.device,
-    num_epochs: int = 100,
+    num_epochs: Optional[int] = None,
     use_pretrained: bool = False,
     pretrained_model: Optional[nn.Module] = None
 ) -> Dict[str, Any]:
@@ -159,6 +161,7 @@ def _evaluate_single_fold_legacy(
     Returns:
         Dictionary with fold metrics and metadata.
     """
+    num_epochs = configured_epochs(config, num_epochs)
     print(f"\n{'='*70}")
     print(f"FOLD {fold_num}/5")
     print(f"{'='*70}")
@@ -174,11 +177,13 @@ def _evaluate_single_fold_legacy(
             print(f"   ✗ Error cargando pesos pre-entrenados: {e}")
             print("   Continuando con pesos aleatorios...")
 
-    optimizer_class = OPTIMIZERS[best_genome["optimizer"]]
-    optimizer = optimizer_class(model.parameters(), lr=best_genome["learning_rate"])
+    optimizer = make_optimizer(model, best_genome, config)
     criterion = nn.CrossEntropyLoss()
 
     selection_metric = resolve_metric_name(config, "fold_selection_metric")
+    amp_enabled = bool(config_value(config, 'use_amp')) and device.type == 'cuda'
+    amp_dtype = torch.bfloat16 if str(config_value(config, 'amp_dtype')).lower() == 'bfloat16' else torch.float16
+    scaler = torch.amp.GradScaler('cuda', enabled=amp_enabled and amp_dtype == torch.float16)
     best_selection_score = float("-inf")
     best_selection_metrics = None
     best_model_state = None
@@ -201,13 +206,18 @@ def _evaluate_single_fold_legacy(
             data, target = data.to(device, non_blocking=True), target.to(device, non_blocking=True)
 
             optimizer.zero_grad()
-            output = model(data)
-            loss = criterion(output, target)
-            loss.backward()
-            optimizer.step()
+            with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=amp_enabled):
+                output = model(data)
+                loss = classification_loss(model, output, target, criterion, config)
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
 
             running_loss += loss.item()
             batch_count += 1
+            limit = config_value(config, 'max_batches_per_epoch')
+            if limit is not None and batch_count >= int(limit):
+                break
 
         avg_loss = running_loss / max(1, batch_count)
 
@@ -327,7 +337,7 @@ def evaluate_single_fold(
     fold_test_loader: torch.utils.data.DataLoader,
     fold_num: int,
     device: torch.device,
-    num_epochs: int = 100
+    num_epochs: Optional[int] = None
 ) -> Dict[str, Any]:
     """
     Train one fold with validation selection and evaluate once on held-out test.
@@ -345,24 +355,27 @@ def evaluate_single_fold(
     Returns:
         Dictionary with fold metrics and metadata.
     """
+    num_epochs = configured_epochs(config, num_epochs)
     print(f"\n{'='*70}")
     print(f"FOLD {fold_num}/5")
     print(f"{'='*70}")
 
     model = EvolvableCNN(best_genome, config).to(device)
 
-    optimizer_class = OPTIMIZERS[best_genome["optimizer"]]
-    optimizer = optimizer_class(model.parameters(), lr=best_genome["learning_rate"])
+    optimizer = make_optimizer(model, best_genome, config)
     criterion = nn.CrossEntropyLoss()
 
     selection_metric = resolve_metric_name(config, "fold_selection_metric")
+    amp_enabled = bool(config_value(config, 'use_amp')) and device.type == 'cuda'
+    amp_dtype = torch.bfloat16 if str(config_value(config, 'amp_dtype')).lower() == 'bfloat16' else torch.float16
+    scaler = torch.amp.GradScaler('cuda', enabled=amp_enabled and amp_dtype == torch.float16)
     checkpoint_metric = config.get("checkpoint_metric", config.get("fitness_metric", "f1_score"))
     best_selection_score = -float("inf")
     best_selection_metrics = None
     best_model_state = None
     best_epoch = 0
 
-    patience = config.get("epoch_patience", 10)
+    patience = config_value(config, 'epoch_patience')
     patience_counter = 0
     last_improvement_score = -float("inf")
     improvement_threshold = resolve_metric_improvement_threshold(config)
@@ -379,16 +392,23 @@ def evaluate_single_fold(
             data, target = data.to(device, non_blocking=True), target.to(device, non_blocking=True)
 
             optimizer.zero_grad()
-            output = model(data)
-            loss = criterion(output, target)
-            loss.backward()
-            optimizer.step()
+            with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=amp_enabled):
+                output = model(data)
+                loss = classification_loss(model, output, target, criterion, config)
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
 
             running_loss += loss.item()
             batch_count += 1
+            limit = config_value(config, 'max_batches_per_epoch')
+            if limit is not None and batch_count >= int(limit):
+                break
 
         avg_loss = running_loss / max(1, batch_count)
 
+        if epoch % int(config_value(config, 'validation_frequency_epochs')) != 0 and epoch != num_epochs:
+            continue
         validation_metrics = _evaluate_loader_metrics(model, fold_validation_loader, device)
         current_score = metric_value(validation_metrics, selection_metric)
 
@@ -490,8 +510,7 @@ def evaluate_5fold_cross_validation(
     # dataset selector still points at it.
     final_config = get_data_phase_config(config, 'final_evaluation')
 
-    if num_epochs is None:
-        num_epochs = config.get("num_epochs", 100)
+    num_epochs = configured_epochs(config, num_epochs)
     selection_metric = resolve_metric_name(config, "fold_selection_metric")
 
     print("=" * 80)

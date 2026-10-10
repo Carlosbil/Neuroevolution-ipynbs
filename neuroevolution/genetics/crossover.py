@@ -8,6 +8,8 @@ import uuid
 from typing import Tuple
 from neuroevolution.models.genome_validator import is_genome_valid, validate_and_fix_genome
 from neuroevolution.genetics.innovation import build_innovation_genes, append_structural_event
+from neuroevolution.genetics.genome import invalidate_evaluation
+from neuroevolution.config import optimizer_learning_rates
 
 
 def _copy_topology_fields(child: dict, source: dict) -> None:
@@ -61,6 +63,7 @@ def _innovation_aligned_child(dominant_parent: dict, other_parent: dict, config:
             merged_genes.append(copy.deepcopy(other_gene))
 
     child = copy.deepcopy(dominant)
+    invalidate_evaluation(child)
 
     conv_filters = []
     conv_kernels = []
@@ -141,9 +144,23 @@ def crossover_genomes(parent1: dict, parent2: dict, config: dict) -> Tuple[dict,
     Returns:
         Tuple of (child1, child2)
     """
+    if parent1.get('model_kind') == 'reference' or parent2.get('model_kind') == 'reference':
+        children = []
+        cross = random.random() <= config['crossover_rate']
+        for parent, other in ((parent1, parent2), (parent2, parent1)):
+            child = invalidate_evaluation(copy.deepcopy(parent))
+            if cross:
+                child['optimizer'] = random.choice([parent['optimizer'], other['optimizer']])
+                rates = optimizer_learning_rates(config, child['optimizer'])
+                child['learning_rate'] = random.choice([rate for rate in (parent['learning_rate'], other['learning_rate']) if rate in rates] or rates)
+            child['id'] = str(uuid.uuid4())[:8]
+            child['innovation_genes'] = build_innovation_genes(child)
+            append_structural_event(child, 'reference_crossover', {'parent': parent['id'], 'other_parent': other['id'], 'crossed': cross})
+            children.append(child)
+        return tuple(children)
     if random.random() > config['crossover_rate']:
-        child1 = copy.deepcopy(parent1)
-        child2 = copy.deepcopy(parent2)
+        child1 = invalidate_evaluation(copy.deepcopy(parent1))
+        child2 = invalidate_evaluation(copy.deepcopy(parent2))
         child1['id'] = str(uuid.uuid4())[:8]
         child2['id'] = str(uuid.uuid4())[:8]
         child1['fitness'] = 0.0
@@ -158,7 +175,7 @@ def crossover_genomes(parent1: dict, parent2: dict, config: dict) -> Tuple[dict,
     if parent2.get('fitness', 0.0) > parent1.get('fitness', 0.0):
         parent1, parent2 = parent2, parent1
 
-    max_attempts = 20
+    max_attempts = int(config.get('crossover_max_attempts', 20))
     for attempt in range(max_attempts):
         child1 = _innovation_aligned_child(parent1, parent2, config)
         child2 = _innovation_aligned_child(parent2, parent1, config)
@@ -167,8 +184,8 @@ def crossover_genomes(parent1: dict, parent2: dict, config: dict) -> Tuple[dict,
             return child1, child2
 
     print(f"⚠️ Warning: Could not create valid crossover after {max_attempts} attempts. Returning parent copies.")
-    child1 = copy.deepcopy(parent1)
-    child2 = copy.deepcopy(parent2)
+    child1 = invalidate_evaluation(copy.deepcopy(parent1))
+    child2 = invalidate_evaluation(copy.deepcopy(parent2))
     child1['id'] = str(uuid.uuid4())[:8]
     child2['id'] = str(uuid.uuid4())[:8]
     child1['fitness'] = 0.0

@@ -16,15 +16,21 @@ import random
 import uuid
 import json
 import time
+from collections import deque
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+from queue import Empty, SimpleQueue
+from pathlib import Path
 import numpy as np
 import torch
 import torch.nn as nn
 from typing import Dict, Optional
 
+from ..config import get_data_phase_config, resolve_config, get_operator_config, with_fold_progress_callback
 from ..genetics.genome import create_random_genome
 from ..genetics.architecture_templates import (
     choose_template,
     create_template_genome,
+    get_configured_templates,
 )
 from ..genetics.mutation import mutate_genome
 from ..genetics.crossover import crossover_genomes
@@ -43,55 +49,41 @@ from ..models.genome_validator import (
     validate_and_fix_genome,
 )
 from ..models.evolvable_cnn import EvolvableCNN
-from .fitness import evaluate_fitness
+from .fitness import aggregate_fold_results, train_fold_in_thread, train_fold_on_cuda_stream
 
 
 class HybridNeuroevolution:
     """Main class that implements hybrid neuroevolution with 5-fold validation fitness and adaptive mutation."""
 
     def __init__(self, config: dict, device: torch.device):
-        self.config = config
+        self.config = resolve_config(config)
         self.device = device
         self.population = []
         self.generation = 0
         self.best_individual = None
         self.fitness_history = []
         self.generation_stats = []
+        self.fold_progress = {}
 
         self.run_artifacts_dir = self.config.get('artifacts_dir', 'artifacts/test_audio')
         os.makedirs(self.run_artifacts_dir, exist_ok=True)
         self.best_checkpoint_path = None
         self.progress_json_path = os.path.join(self.run_artifacts_dir, 'evolution_progress.json')
         self.generation_log_path = os.path.join(self.run_artifacts_dir, 'generation_progress.txt')
+        self.fold_progress_path = os.path.join(self.run_artifacts_dir, 'fold_progress.json')
 
         # Early stopping configuration at generation level
         self.generations_without_improvement = 0
         self.best_fitness_overall = -float('inf')
         self.best_fitness_for_early_stopping = -float('inf')
-        self.min_improvement_threshold = config.get('min_improvement_threshold', 0.1)
-        self.max_generations_without_improvement = config.get('early_stopping_generations', 10)
+        self.min_improvement_threshold = self.config['min_improvement_threshold']
+        self.max_generations_without_improvement = self.config['early_stopping_generations']
 
-        # Incremental evolution defaults
-        self.config.setdefault('complexity_step_generations', 3)
-        self.config.setdefault('initial_max_conv_layers', self.config['min_conv_layers'])
-        self.config.setdefault('initial_max_fc_layers', self.config['min_fc_layers'])
-        self.config.setdefault('incremental_growth_probability', 0.7)
-
-        # Genetic speciation defaults
-        self.config.setdefault('speciation_threshold', 0.45)
-        self.config.setdefault('species_elite_min', 1)
-        self.config.setdefault('species_survival_rate', 0.5)
-
-        # Selection defaults keep older ad hoc configs runnable while the
-        # canonical default config enables Pareto selection explicitly.
-        self.config.setdefault('selection_strategy', 'pareto')
-        self.config.setdefault('pareto_objectives', copy.deepcopy(DEFAULT_PARETO_OBJECTIVES))
-        self.config.setdefault('pareto_tie_breaker', 'crowding_distance')
-        self.config.setdefault('pareto_fitness_epsilon', 0.0)
-
-        self.config['current_max_conv_layers'] = self.config['initial_max_conv_layers']
-        self.config['current_max_fc_layers'] = self.config['initial_max_fc_layers']
-
+        self.current_max_conv_layers = self.config['initial_max_conv_layers']
+        self.current_max_fc_layers = self.config['initial_max_fc_layers']
+        self.current_mutation_rate = self.config['current_mutation_rate']
+        self.last_evaluated_generation = None
+        self.template_cursor = 0
         self.species = {}
 
     def _uses_pareto_selection(self) -> bool:
@@ -117,7 +109,7 @@ class HybridNeuroevolution:
             genome['evaluation_time_seconds'] = metrics.get('evaluation_time_seconds')
         metrics['evaluation_time_seconds'] = genome.get('evaluation_time_seconds')
 
-        parameter_count = genome.get('parameter_count', metrics.get('parameter_count'))
+        parameter_count = metrics.get('parameter_count') if elapsed_seconds is not None else genome.get('parameter_count', metrics.get('parameter_count'))
         if parameter_count is None:
             try:
                 parameter_count = int(estimate_genome_parameter_count(genome, self.config))
@@ -181,6 +173,7 @@ class HybridNeuroevolution:
     def _save_evolution_progress(self):
         """Saves current evolution state to JSON file."""
         progress_data = {
+            'schema_version': 2,
             'generation': self.generation,
             'population': self._to_json_serializable(self.population),
             'best_individual': self._to_json_serializable(self.best_individual),
@@ -195,6 +188,14 @@ class HybridNeuroevolution:
                 self.config.get('pareto_objectives', DEFAULT_PARETO_OBJECTIVES)
             ),
             'pareto_fitness_epsilon': float(self.config.get('pareto_fitness_epsilon', 0.0)),
+            'config_snapshot': self._to_json_serializable(self.config),
+            'last_evaluated_generation': self.last_evaluated_generation,
+            'template_cursor': self.template_cursor,
+            'runtime_state': {
+                'current_mutation_rate': self.current_mutation_rate,
+                'current_max_conv_layers': self.current_max_conv_layers,
+                'current_max_fc_layers': self.current_max_fc_layers,
+            },
         }
 
         with open(self.progress_json_path, 'w', encoding='utf-8') as progress_file:
@@ -202,12 +203,31 @@ class HybridNeuroevolution:
 
     def _load_evolution_progress(self) -> bool:
         """Loads evolution state from JSON file if exists."""
-        if not os.path.exists(self.progress_json_path):
+        if not self.config['resume_evolution'] or not os.path.exists(self.progress_json_path):
             return False
 
         try:
             with open(self.progress_json_path, 'r', encoding='utf-8') as progress_file:
                 progress_data = json.load(progress_file)
+
+            saved_config = progress_data.get('config_snapshot')
+            if saved_config is None:
+                raise ValueError('Legacy progress has no configuration snapshot; set resume_evolution=False to start a clean experiment')
+            training_keys = ('input_modality', 'num_channels', 'num_frequency_bins', 'sequence_length',
+                             'num_classes', 'batch_size', 'num_epochs', 'epoch_patience',
+                             'seed', 'num_folds', 'fitness_metric', 'fold_selection_metric', 'data_path',
+                             'improvement_threshold', 'metric_improvement_threshold',
+                             'validation_frequency_epochs', 'max_batches_per_epoch',
+                             'pre_fc_pool_shape', 'pre_fc_pool_length', 'conv_dropout_rate',
+                             'use_amp', 'amp_dtype', 'require_all_folds', 'reference_aux_loss_weight',
+                             'evolution_dataset_id', 'evolution_fold_files_subdirectory',
+                             'optimizer_kwargs', 'reference_input_size', 'reference_input_sizes', 'reference_lenet_input_size',
+                             'reference_inception_input_size', 'reference_aux_logits',
+                             'reference_dropout_rate', 'minimum_specificity', 'minimum_sensitivity')
+            current_config = json.loads(json.dumps(self.config))
+            changed = [key for key in training_keys if saved_config.get(key) != current_config.get(key)]
+            if changed or len(progress_data.get('population', [])) != self.config['population_size']:
+                raise ValueError(f'Resume configuration differs from saved training: {changed}; start a clean experiment')
 
             self.generation = int(progress_data.get('generation', 0))
             self.population = progress_data.get('population', [])
@@ -220,7 +240,12 @@ class HybridNeuroevolution:
                 progress_data.get('best_fitness_for_early_stopping', self.best_fitness_overall)
             )
             self.best_checkpoint_path = progress_data.get('best_checkpoint_path', None)
+            self.last_evaluated_generation = progress_data.get('last_evaluated_generation')
+            self.template_cursor = int(progress_data.get('template_cursor', 0))
+            self.current_mutation_rate = progress_data.get('runtime_state', {}).get('current_mutation_rate', self.current_mutation_rate)
             return True
+        except ValueError:
+            raise
         except Exception as e:
             print(f"WARNING: Could not load evolution progress: {e}")
             return False
@@ -230,19 +255,21 @@ class HybridNeuroevolution:
         step = max(1, self.config['complexity_step_generations'])
         stage = max(0, self.generation // step)
 
-        self.config['current_max_conv_layers'] = min(
+        self.current_max_conv_layers = min(
             self.config['max_conv_layers'],
             self.config['initial_max_conv_layers'] + stage
         )
-        self.config['current_max_fc_layers'] = min(
+        self.current_max_fc_layers = min(
             self.config['max_fc_layers'],
             self.config['initial_max_fc_layers'] + stage
         )
 
     def _enforce_complexity_caps(self, genome: dict) -> dict:
         """Enforces incremental complexity caps on a genome."""
-        genome['num_conv_layers'] = min(genome['num_conv_layers'], self.config['current_max_conv_layers'])
-        genome['num_fc_layers'] = min(genome['num_fc_layers'], self.config['current_max_fc_layers'])
+        if genome.get('model_kind') == 'reference':
+            return validate_and_fix_genome(genome, self.config)
+        genome['num_conv_layers'] = min(genome['num_conv_layers'], self.current_max_conv_layers)
+        genome['num_fc_layers'] = min(genome['num_fc_layers'], self.current_max_fc_layers)
         genome = validate_and_fix_genome(genome, self.config)
         genome['innovation_genes'] = build_innovation_genes(genome)
         return genome
@@ -262,11 +289,11 @@ class HybridNeuroevolution:
         """Creates one individual using doubled layer caps for the current generation."""
         base_conv_cap = max(
             self.config['min_conv_layers'],
-            self.config.get('current_max_conv_layers', self.config['max_conv_layers'])
+            self.current_max_conv_layers
         )
         base_fc_cap = max(
             self.config['min_fc_layers'],
-            self.config.get('current_max_fc_layers', self.config['max_fc_layers'])
+            self.current_max_fc_layers
         )
 
         target_conv_layers = min(self.config['max_conv_layers'], base_conv_cap * 2)
@@ -274,9 +301,7 @@ class HybridNeuroevolution:
 
         target_fc_layers = max(self.config['min_fc_layers'], target_fc_layers)
 
-        boosted_config = copy.deepcopy(self.config)
-        boosted_config['current_max_conv_layers'] = target_conv_layers
-        boosted_config['current_max_fc_layers'] = target_fc_layers
+        boosted_config = get_operator_config(self.config, self.generation, self.current_mutation_rate, target_conv_layers, target_fc_layers)
 
         genome = create_random_genome(boosted_config)
         max_safe_conv_layers = self._max_safe_conv_layers_for_genome(genome)
@@ -343,10 +368,15 @@ class HybridNeuroevolution:
         """Creates one initial individual from a configured architecture template."""
         max_attempts = int(self.config.get('architecture_template_max_attempts', 20))
         last_error = None
+        template = None
 
         for _ in range(max_attempts):
             try:
-                template = choose_template(quartile_config)
+                templates = get_configured_templates(quartile_config)
+                if not templates:
+                    return create_random_genome(quartile_config)
+                template = templates[self.template_cursor % len(templates)]
+                self.template_cursor += 1
                 genome = create_template_genome(
                     template.template_id,
                     quartile_config,
@@ -358,6 +388,8 @@ class HybridNeuroevolution:
                         'fc_cap': int(fc_quartile_cap),
                     },
                 )
+                if genome.get('model_kind') == 'reference':
+                    return genome
                 genome_safe_max_conv_layers = self._max_safe_conv_layers_for_genome(genome)
                 genome['num_conv_layers'] = max(
                     self.config['min_conv_layers'],
@@ -373,8 +405,12 @@ class HybridNeuroevolution:
                 genome['fitness'] = 0.0
                 return genome
             except ValueError as error:
+                if template is not None and template.model_kind == 'reference' and not self.config['reference_seed_fallback_to_random']:
+                    raise
                 last_error = error
 
+        if not self.config['reference_seed_fallback_to_random']:
+            raise ValueError(f"Configured template cannot be built without shrinking: {last_error}")
         print(f"WARNING: Could not create template seed after {max_attempts} attempts: {last_error}")
         return create_random_genome(quartile_config)
 
@@ -415,6 +451,8 @@ class HybridNeuroevolution:
 
     def compatibility_distance(self, g1: dict, g2: dict) -> float:
         """Combines topology differences and innovation mismatch for speciation."""
+        if g1.get('model_kind') == 'reference' or g2.get('model_kind') == 'reference':
+            return 0.0 if g1.get('reference_architecture_id') == g2.get('reference_architecture_id') else 1.0
         topo = (
             abs(g1['num_conv_layers'] - g2['num_conv_layers']) +
             abs(g1['num_fc_layers'] - g2['num_fc_layers'])
@@ -473,7 +511,7 @@ class HybridNeuroevolution:
         print(f"Initializing population of {self.config['population_size']} individuals...")
         print(
             f"Incremental caps at generation {self.generation}: "
-            f"conv<={self.config['current_max_conv_layers']}, fc<={self.config['current_max_fc_layers']}"
+            f"conv<={self.current_max_conv_layers}, fc<={self.current_max_fc_layers}"
         )
         print("Using mixed quartile initialization for initial population depth ranges.")
 
@@ -497,15 +535,13 @@ class HybridNeuroevolution:
             quartile_index = min(3, (4 * i) // max(1, regular_population_size))
             quartile_number = quartile_index + 1
 
-            conv_quartile_cap = int(np.ceil((quartile_number / 4.0) * self.config['max_conv_layers']))
-            fc_quartile_cap = int(np.ceil((quartile_number / 4.0) * self.config['max_fc_layers']))
+            conv_quartile_cap = int(np.ceil((quartile_number / 4.0) * self.current_max_conv_layers))
+            fc_quartile_cap = int(np.ceil((quartile_number / 4.0) * self.current_max_fc_layers))
 
             conv_quartile_cap = max(min_conv_layers, conv_quartile_cap)
             fc_quartile_cap = max(min_fc_layers, fc_quartile_cap)
 
-            quartile_config = copy.deepcopy(self.config)
-            quartile_config['current_max_conv_layers'] = conv_quartile_cap
-            quartile_config['current_max_fc_layers'] = fc_quartile_cap
+            quartile_config = get_operator_config(self.config, self.generation, self.current_mutation_rate, conv_quartile_cap, fc_quartile_cap)
 
             if i in template_slots:
                 genome = self._create_template_seed_individual(
@@ -561,13 +597,6 @@ class HybridNeuroevolution:
         checkpoint_dir = self.run_artifacts_dir
         os.makedirs(checkpoint_dir, exist_ok=True)
 
-        if self.best_checkpoint_path and os.path.exists(self.best_checkpoint_path):
-            try:
-                os.remove(self.best_checkpoint_path)
-                print(f"      Checkpoint anterior eliminado: {self.best_checkpoint_path}")
-            except Exception as e:
-                print(f"      Error eliminando checkpoint anterior: {e}")
-
         checkpoint_filename = f"best_model_gen{self.generation}_id{genome['id']}_fitness{genome['fitness']:.2f}.pth"
         checkpoint_path = os.path.join(checkpoint_dir, checkpoint_filename)
 
@@ -583,14 +612,22 @@ class HybridNeuroevolution:
             'test_evaluated': False,
         }
 
+        previous_path = self.best_checkpoint_path
+        temporary_path = checkpoint_path + '.tmp'
         try:
-            torch.save(checkpoint_data, checkpoint_path)
+            torch.save(checkpoint_data, temporary_path)
+            os.replace(temporary_path, checkpoint_path)
             self.best_checkpoint_path = checkpoint_path
             self._save_evolution_progress()
+            if previous_path and Path(previous_path).resolve() != Path(checkpoint_path).resolve() and Path(previous_path).resolve().parent == Path(checkpoint_dir).resolve():
+                try:
+                    Path(previous_path).unlink(missing_ok=True)
+                except OSError as error:
+                    print(f"      Could not remove previous checkpoint: {error}")
             print(f"      Nuevo checkpoint guardado: {checkpoint_path}")
             print(f"        Fitness: {genome['fitness']:.2f}%, ID: {genome['id']}, Gen: {self.generation}")
         except Exception as e:
-            print(f"      Error guardando checkpoint: {e}")
+            raise RuntimeError(f"Could not save checkpoint: {checkpoint_path}") from e
 
     def load_best_checkpoint(self) -> tuple:
         """
@@ -619,18 +656,179 @@ class HybridNeuroevolution:
             print(f"Error cargando checkpoint: {e}")
             return None, None
 
+    def _save_fold_progress(self):
+        """Publish one consistent progress snapshot from the scheduling thread."""
+        snapshot = {'generation': self.generation, 'individuals': self.fold_progress}
+        temporary_path = f'{self.fold_progress_path}.tmp'
+        with open(temporary_path, 'w', encoding='utf-8') as progress_file:
+            json.dump(snapshot, progress_file, indent=2)
+        os.replace(temporary_path, self.fold_progress_path)
+
+    def _iter_population_results(self):
+        """Use one bounded fold queue for the entire population."""
+        num_folds = int(self.config.get('num_folds', 5))
+        worker_limit = max(1, int(self.config.get('fold_parallel_workers', 1)))
+        fold_config = get_data_phase_config(self.config, 'evolution')
+        train_fold = train_fold_on_cuda_stream if self.device.type == 'cuda' else train_fold_in_thread
+        pending = deque()
+        cached = []
+        keys = {}
+        states = {}
+        self.fold_progress = {}
+
+        for index, genome in enumerate(self.population):
+            key = f"{index + 1}:{genome['id']}"
+            keys[index] = key
+            skip = bool(genome.pop('skip_next_evaluation', False)) and genome.get('metrics') is not None
+            self.fold_progress[key] = {
+                'id': genome['id'],
+                'status': 'cached' if skip else 'queued',
+                'folds': {str(fold): {'status': 'pending', 'fitness': None}
+                          for fold in range(1, num_folds + 1)},
+                'average_fitness': float(genome['fitness']) if skip else None,
+            }
+            if skip:
+                source = genome.pop('cached_from_generation', self.generation - 1)
+                cached.append((index, float(genome['fitness']), None, genome['metrics'], None,
+                               'cached_elite', source))
+            else:
+                genome.pop('cached_from_generation', None)
+                # Cost metadata sums actual fold runtimes, excluding time
+                # spent waiting in the shared queue.
+                states[index] = {'results': {}, 'best_fold': None, 'best_score': None,
+                                 'best_model': None, 'elapsed': 0.0}
+        # Round-robin order lets every individual enter the queue without
+        # reserving a worker for that individual until all five folds finish.
+        for fold in range(1, num_folds + 1):
+            for index in states:
+                pending.append((index, fold))
+        self._save_fold_progress()
+
+        futures = {}
+        progress_events = SimpleQueue()
+
+        def timed_train_fold(index, fold):
+            started = time.perf_counter()
+            progress_events.put((index, fold, 'started', None, None))
+            worker_config = with_fold_progress_callback(fold_config,
+                lambda epoch, total: progress_events.put((index, fold, 'epoch', epoch, total)))
+            result = train_fold(self.population[index], fold, worker_config, self.device)
+            return result, time.perf_counter() - started
+
+        def collect_progress_events():
+            changed = False
+            while True:
+                try:
+                    index, fold, kind, epoch, total = progress_events.get_nowait()
+                except Empty:
+                    break
+                entry = self.fold_progress[keys[index]]['folds'][str(fold)]
+                if kind == 'started':
+                    entry['started_at'] = time.time()
+                else:
+                    entry['epoch'] = epoch
+                    entry['total_epochs'] = total
+                entry['last_update_at'] = time.time()
+                changed = True
+            if changed:
+                self._save_fold_progress()
+
+        def dispatch_folds(executor):
+            while pending and len(futures) < worker_limit:
+                index, fold = pending.popleft()
+                self.fold_progress[keys[index]]['status'] = 'running'
+                self.fold_progress[keys[index]]['folds'][str(fold)]['status'] = 'running'
+                future = executor.submit(timed_train_fold, index, fold)
+                futures[future] = (index, fold)
+
+        with ThreadPoolExecutor(max_workers=worker_limit) as executor:
+            dispatch_folds(executor)
+            self._save_fold_progress()
+            print(
+                f"      Fold queue: {len(futures)} active, {len(pending)} pending. "
+                f"Progress: {self.fold_progress_path}"
+            )
+            for item in cached:
+                yield item
+
+            last_heartbeat = time.monotonic()
+            while futures:
+                completed, _ = wait(tuple(futures), timeout=5, return_when=FIRST_COMPLETED)
+                collect_progress_events()
+                if not completed and time.monotonic() - last_heartbeat >= 30:
+                    completed_count = sum(len(state['results']) for state in states.values())
+                    print(
+                        f"      Fold queue alive: {len(futures)} active, {len(pending)} pending, "
+                        f"{completed_count} completed in this generation."
+                    )
+                    last_heartbeat = time.monotonic()
+                for future in completed:
+                    index, fold = futures.pop(future)
+                    try:
+                        (result_fold, score, fold_model, metrics), fold_elapsed = future.result()
+                    except Exception:
+                        entry = self.fold_progress[keys[index]]
+                        entry['status'] = 'failed'
+                        entry['folds'][str(fold)]['status'] = 'failed'
+                        self._save_fold_progress()
+                        raise
+                    if result_fold != fold:
+                        raise ValueError(f"Expected fold {fold}, received {result_fold}")
+                    state = states[index]
+                    state['elapsed'] += fold_elapsed
+                    score = float(score)
+                    is_best = (state['best_score'] is None or score > state['best_score'] or
+                               (score == state['best_score'] and fold < state['best_fold']))
+                    if is_best:
+                        # Keep only the best fold's model, on CPU, so finished
+                        # folds do not accumulate GPU models behind the queue.
+                        if fold_model is not None and self.device.type == 'cuda':
+                            fold_model = fold_model.to('cpu')
+                        state['best_model'] = fold_model
+                        state['best_fold'] = fold
+                        state['best_score'] = score
+                    state['results'][fold] = (score, None, metrics)
+                    del fold_model
+                    fold_entry = self.fold_progress[keys[index]]['folds'][str(fold)]
+                    fold_entry.update({'status': 'completed' if metrics is not None else 'failed',
+                                       'fitness': score, 'duration_seconds': fold_elapsed})
+                    print(f"      Individual {self.population[index]['id']} fold {fold}: {score:.2f}%")
+
+                    if len(state['results']) == num_folds:
+                        best_fold = state['best_fold']
+                        best_score, _, best_metrics = state['results'][best_fold]
+                        state['results'][best_fold] = (best_score, state['best_model'], best_metrics)
+                        fitness, best_model, aggregated = aggregate_fold_results(
+                            self.population[index], self.config, state['results']
+                        )
+                        elapsed = state['elapsed']
+                        fold_failed = any(result[2] is None for result in state['results'].values())
+                        self.fold_progress[keys[index]]['status'] = (
+                            'completed_with_failed_folds' if fold_failed else 'completed'
+                        )
+                        self.fold_progress[keys[index]]['average_fitness'] = fitness
+                        states.pop(index)
+                        state['results'].clear()
+                        self._save_fold_progress()
+                        yield index, fitness, best_model, aggregated, elapsed, 'trained', None
+                        del best_model
+                    dispatch_folds(executor)
+                    self._save_fold_progress()
+
     def evaluate_population(self):
         """Evaluates all individuals in the population and tracks statistics."""
         print(f"\nEvaluating population (Generation {self.generation})...")
         print(f"Processing {len(self.population)} individuals...")
 
         fitness_scores = []
-        all_individual_metrics = []
+        all_individual_metrics = [None] * len(self.population)
         best_fitness_so_far = 0.0
         current_global_best_fitness = self.best_individual['fitness'] if self.best_individual else 0.0
         generation_log_lines = []
 
-        for i, genome in enumerate(self.population):
+        for (i, fitness, model, metrics, elapsed_seconds,
+             evaluation_status, cached_from_generation) in self._iter_population_results():
+            genome = self.population[i]
             print(
                 f"   Evaluating individual {i+1}/{len(self.population)} (ID: {genome['id']})"
             )
@@ -639,26 +837,13 @@ class HybridNeuroevolution:
                 f"optimizer={genome['optimizer']}, learning_rate={genome['learning_rate']}"
             )
 
-            skip_evaluation = bool(genome.pop('skip_next_evaluation', False))
-            cached_metrics = genome.get('metrics')
-            elapsed_seconds = None
-            if skip_evaluation and cached_metrics is not None:
-                fitness = float(genome.get('fitness', 0.0))
-                metrics = cached_metrics
-                model = None
-                evaluation_status = 'cached_elite'
-                cached_from_generation = genome.pop('cached_from_generation', self.generation - 1)
+            if evaluation_status == 'cached_elite':
                 print(
                     f"      Skipping training: elite selected in generation {cached_from_generation} "
                     f"keeps cached fitness {fitness:.2f}%"
                 )
             else:
-                genome.pop('cached_from_generation', None)
-                start_time = time.perf_counter()
-                fitness, model, metrics = evaluate_fitness(genome, self.config, self.device)
-                elapsed_seconds = time.perf_counter() - start_time
                 genome['fitness'] = fitness
-                evaluation_status = 'trained'
 
             self._record_cost_metadata(genome, metrics, elapsed_seconds)
             self._sync_selection_metadata_to_metrics(genome, metrics)
@@ -676,7 +861,7 @@ class HybridNeuroevolution:
                 'metrics': metrics,
                 'evaluation_status': evaluation_status
             }
-            all_individual_metrics.append(individual_summary)
+            all_individual_metrics[i] = individual_summary
 
             if fitness > best_fitness_so_far:
                 best_fitness_so_far = fitness
@@ -685,6 +870,7 @@ class HybridNeuroevolution:
                 current_global_best_fitness = fitness
                 if model is not None:
                     self.save_best_checkpoint(genome, model)
+            del model
 
             generation_log_lines.append(
                 f"Individual {i+1}/{len(self.population)} | ID={genome['id']} | "
@@ -817,136 +1003,101 @@ class HybridNeuroevolution:
         print(f"Detailed generation report appended to: {self.generation_log_path}")
 
     def selection_and_reproduction(self):
-        """Selects best individuals and creates new generation through crossover and mutation."""
-        print(f"\nStarting selection and reproduction...")
-        self.config['current_generation'] = self.generation
-
-        if self._uses_pareto_selection():
-            self._assign_selection_metadata()
-            self.population.sort(key=lambda individual: pareto_selection_key(individual, self.config))
-        else:
-            self.population.sort(key=lambda x: x['fitness'], reverse=True)
-
-        reserve_double_cap_slot = self.config['population_size'] > 1
-        regular_target_size = (
-            self.config['population_size'] - 1
-            if reserve_double_cap_slot
-            else self.config['population_size']
-        )
-
-        elite_size = max(1, int(self.config['population_size'] * self.config['elite_percentage']))
-        elite_size = min(elite_size, regular_target_size)
-        elite = []
-        
-        print(f"Selecting {elite_size} elite individuals:")
-        for i, individual in enumerate(self.population[:elite_size]):
-            if self._uses_pareto_selection():
-                print(
-                    f"   Elite {i+1}: {individual['id']} "
-                    f"(rank: {individual.get('pareto_rank', 'NA')}, "
-                    f"crowding: {self._format_crowding_distance(individual.get('crowding_distance'))}, "
-                    f"fitness: {individual['fitness']:.2f}%)"
-                )
+        """Preserve quality, breed within species and introduce fresh candidates."""
+        operator_config = get_operator_config(self.config, self.generation, self.current_mutation_rate)
+        self._assign_selection_metadata()
+        self.population.sort(key=lambda individual: pareto_selection_key(individual, self.config))
+        if self.config['speciation_enabled']:
+            self._speciate_population()
+        size = int(self.config['population_size'])
+        # Global elites always include the best scalar-fitness candidate, even
+        # when a Pareto extreme would otherwise displace it.
+        elite_size = min(size - 1, max(1, int(size * self.config['elite_percentage'])))
+        best = max(self.population, key=lambda individual: individual['fitness'])
+        selected = [best] + [individual for individual in self.population if individual['id'] != best['id']][:elite_size - 1]
+        species_budget = min(size - len(selected) - 1, int(size * self.config['species_elite_fraction'])) if self.config['speciation_enabled'] else 0
+        selected_ids = {individual['id'] for individual in selected}
+        for specie in self.species.values():
+            if species_budget <= 0:
+                break
+            ranked = sorted(specie['members'], key=lambda individual: pareto_selection_key(individual, self.config))
+            for individual in ranked[:int(self.config['species_elite_min'])]:
+                if individual['id'] not in selected_ids and species_budget > 0:
+                    selected.append(individual)
+                    selected_ids.add(individual['id'])
+                    species_budget -= 1
+        new_population = []
+        for individual in selected:
+            elite = copy.deepcopy(individual)
+            elite['skip_next_evaluation'] = True
+            elite['cached_from_generation'] = self.generation - 1
+            new_population.append(elite)
+        immigrant_count = min(size - len(new_population) - 1, int(size * self.config['random_immigrant_fraction']))
+        for _ in range(max(0, immigrant_count)):
+            new_population.append(create_random_genome(operator_config))
+        templates = get_configured_templates(self.config)
+        reference_count = min(size - len(new_population) - 1, int(size * self.config['reference_injection_fraction'])) if templates else 0
+        for _ in range(max(0, reference_count)):
+            new_population.append(self._create_template_seed_individual(operator_config, len(new_population), 0, self.current_max_conv_layers, self.current_max_fc_layers))
+        # One explicit growth probe, separate from immigrants and full models.
+        if len(new_population) < size:
+            new_population.append(self._create_double_cap_individual())
+        while len(new_population) < size:
+            if self.config['speciation_enabled'] and self.species:
+                species = list(self.species.values())
+                # Equal species opportunity prevents a large lineage monopolizing reproduction.
+                members = random.choice(species)['members']
+                survivors = sorted(members, key=lambda individual: pareto_selection_key(individual, self.config))[:max(1, int(np.ceil(len(members) * self.config['species_survival_rate'])))]
             else:
-                print(f"   Elite {i+1}: {individual['id']} (fitness: {individual['fitness']:.2f}%)")
-            elite_individual = copy.deepcopy(individual)
-            elite_individual['skip_next_evaluation'] = True
-            elite_individual['cached_from_generation'] = self.generation
-            elite.append(elite_individual)
-        
-        new_population = elite
-        offspring_needed = regular_target_size - len(new_population)
-        
-        print(f"Creating {offspring_needed} new individuals through crossover and mutation...")
-        offspring_created = 0
-        
-        while len(new_population) < regular_target_size:
-            parent1 = self.tournament_selection()
-            parent2 = self.tournament_selection()
-            child1, child2 = crossover_genomes(parent1, parent2, self.config)
-            child1 = mutate_genome(child1, self.config)
-            
-            if len(new_population) < regular_target_size:
-                new_population.append(child1)
-            
-            child2 = mutate_genome(child2, self.config)
-            if len(new_population) < regular_target_size:
-                new_population.append(child2)
-            
-            offspring_created += 2
-            if offspring_created % 4 == 0:
-                print(f"   Created {min(offspring_created, offspring_needed)} of {offspring_needed} new individuals...")
-        
-        self.population = new_population[:regular_target_size]
-        if reserve_double_cap_slot:
-            self.population.append(self._create_double_cap_individual())
-        
-        print(f"New generation created with {len(self.population)} individuals")
-        print(f"   Elite preserved: {elite_size}")
-        print(f"   New individuals: {len(self.population) - elite_size}")
+                survivors = self.population
+            parents = [select_tournament(survivors, self.config, self.config['tournament_size']) for _ in range(2)]
+            for child in crossover_genomes(*parents, operator_config):
+                if len(new_population) < size:
+                    new_population.append(mutate_genome(child, operator_config))
+        self.population = new_population
+        print(f"Generation {self.generation}: {len(selected)} cached elites, {immigrant_count} random immigrants, {reference_count} complete/template injections")
 
-    def tournament_selection(self, tournament_size: int = 3) -> dict:
-        """Selects best individual from a random tournament."""
-        return select_tournament(self.population, self.config, tournament_size)
+    def tournament_selection(self, tournament_size=None) -> dict:
+        return select_tournament(self.population, self.config, tournament_size or self.config['tournament_size'])
 
     def _update_adaptive_mutation(self):
         """Updates mutation rate based on population diversity."""
         if not self.generation_stats:
-            self.config['current_mutation_rate'] = self.config['base_mutation_rate']
+            self.current_mutation_rate = self.config['base_mutation_rate']
             return
         
-        last_std = self.generation_stats[-1]['std_fitness']
-        diversity_factor = min(1.0, last_std / 10.0)
+        from ..models.genome_validator import stable_genome_signature
+        signatures = {stable_genome_signature(genome, self.config) for genome in self.population}
+        diversity_factor = len(signatures) / max(1, len(self.population))
         inverted = 1 - diversity_factor
-        new_rate = self.config['base_mutation_rate'] + (inverted - 0.5) * 0.4
+        new_rate = self.config['base_mutation_rate'] + inverted * self.config['adaptive_mutation_strength']
+        stagnation = self.generations_without_improvement / max(1, self.max_generations_without_improvement)
+        new_rate += min(1.0, stagnation) * self.config['mutation_stagnation_boost']
         new_rate = max(self.config['mutation_rate_min'], min(self.config['mutation_rate_max'], new_rate))
-        self.config['current_mutation_rate'] = round(new_rate, 4)
+        self.current_mutation_rate = round(new_rate, 4)
         
-        print(f"Adaptive mutation rate updated to {self.config['current_mutation_rate']} (std_fitness={last_std:.2f})")
+        print(f"Adaptive mutation rate: {self.current_mutation_rate}; unique genomes: {len(signatures)}/{len(self.population)}")
+
+    def _update_convergence_state(self):
+        """Count each completed evaluation exactly once, including on resume."""
+        if self.last_evaluated_generation == self.generation:
+            return
+        current_best = self.best_individual['fitness'] if self.best_individual else 0.0
+        if current_best - self.best_fitness_for_early_stopping >= self.min_improvement_threshold:
+            self.best_fitness_for_early_stopping = current_best
+            self.generations_without_improvement = 0
+        else:
+            self.generations_without_improvement += 1
+        self.last_evaluated_generation = self.generation
 
     def check_convergence(self) -> bool:
-        """
-        Verifica criterios de convergencia:
-        1. Target fitness alcanzado
-        2. Máximo de generaciones alcanzado
-        3. Early stopping: sin mejora en N generaciones
-        4. Estancamiento detectado en últimas generaciones
-        """
-        # Criterion 1: Target fitness reached
-        if self.best_individual and self.best_individual['fitness'] >= self.config['fitness_threshold']:
-            print(f"\n✅ Target fitness reached! ({self.best_individual['fitness']:.2f}% >= {self.config['fitness_threshold']}%)")
-            return True
-        
-        # Criterion 2: Maximum generations reached
-        if self.generation >= self.config['max_generations']:
-            print(f"\n⏱️ Maximum generations reached ({self.generation}/{self.config['max_generations']})")
-            return True
-        
-        # Criterion 3: Early stopping - no improvement in N generations
-        if self.generation > 0:
-            current_best = self.best_individual['fitness'] if self.best_individual else 0.0
-            improvement = current_best - self.best_fitness_for_early_stopping
-            
-            if improvement >= self.min_improvement_threshold:
-                self.best_fitness_for_early_stopping = current_best
-                self.generations_without_improvement = 0
-                print(f"\n🔄 Improvement detected: {improvement:.2f}% | Generations without improvement: {self.generations_without_improvement}")
-            else:
-                self.generations_without_improvement += 1
-                print(f"\n⏳ No significant improvement | Generations without improvement: {self.generations_without_improvement}/{self.max_generations_without_improvement}")
-                
-                if self.generations_without_improvement >= self.max_generations_without_improvement:
-                    print(f"\n🛑 EARLY STOPPING: No improvement for {self.max_generations_without_improvement} generations")
-                    print(f"   Best fitness plateau: {self.best_fitness_overall:.2f}%")
-                    return True
-        
-        # Criterion 4: Stagnation in last 3 generations
-        if len(self.fitness_history) >= 3:
-            recent = self.fitness_history[-3:]
-            if max(recent) - min(recent) < 0.5:
-                print(f"\n📉 Stagnation detected in last 3 generations (all within {max(recent) - min(recent):.2f}%)")
-        
-        return False
+        """Read stopping conditions; polling never changes counters."""
+        return bool(
+            (self.best_individual and self.best_individual['fitness'] >= self.config['fitness_threshold'])
+            or self.generation >= self.config['max_generations']
+            or (self.last_evaluated_generation == self.generation and self.generation + 1 >= self.config['max_generations'])
+            or self.generations_without_improvement >= self.max_generations_without_improvement
+        )
 
     def _print_final_metrics_summary(self):
         """Imprime un resumen detallado de las métricas del mejor individuo encontrado."""
@@ -1060,13 +1211,19 @@ class HybridNeuroevolution:
         print("="*80)
         
         self.initialize_population()
-        
+        if self.last_evaluated_generation == self.generation and not self.check_convergence():
+            self._update_adaptive_mutation()
+            self.generation += 1
+            self._update_incremental_complexity()
+            self.selection_and_reproduction()
+
         while not self.check_convergence():
             print(f"\n{'='*80}")
             print(f"GENERATION {self.generation}")
             print(f"{'='*80}")
             
             self.evaluate_population()
+            self._update_convergence_state()
             self._save_evolution_progress()
             
             if self.check_convergence():
@@ -1085,8 +1242,7 @@ class HybridNeuroevolution:
         print(f"Best individual found:")
         print(f"   ID: {self.best_individual['id']}")
         print(f"   Fitness: {self.best_individual['fitness']:.2f}%")
-        print(f"   Origin generation: {self.generation}")
-        print(f"   Total generations processed: {self.generation + 1}")
+        print(f"   Total generations processed: {len(self.generation_stats)}")
         print(f"   Generations without improvement: {self.generations_without_improvement}/{self.max_generations_without_improvement}")
         
         self._print_final_metrics_summary()

@@ -3,7 +3,7 @@
 import torch
 import torch.nn as nn
 
-from neuroevolution.config import ACTIVATION_FUNCTIONS
+from neuroevolution.config import ACTIVATION_FUNCTIONS, config_value
 from .genome_validator import (
     calculate_inception_branch_channels,
     calculate_inception_reduction_channels,
@@ -44,7 +44,7 @@ class ResidualConv2DBlock(nn.Module):
     """Residual stack with one spatial pool after the whole block."""
 
     def __init__(self, in_channels, filters, kernel_sizes, activation_names,
-                 normalization_type, residual_projection='auto', apply_dropout=False):
+                 normalization_type, residual_projection='auto', apply_dropout=False, dropout_rate=0.1):
         super().__init__()
         units = []
         current_channels = in_channels
@@ -60,7 +60,7 @@ class ResidualConv2DBlock(nn.Module):
             raise ValueError(f'Unsupported residual projection: {residual_projection}')
         self.final_activation = ACTIVATION_FUNCTIONS[activation_names[-1]]()
         self.pool = nn.MaxPool2d(2, 2)
-        self.dropout = nn.Dropout2d(0.1) if apply_dropout else nn.Identity()
+        self.dropout = nn.Dropout2d(dropout_rate) if apply_dropout else nn.Identity()
 
     def forward(self, x):
         return self.dropout(self.pool(self.final_activation(self.units(x) + self.shortcut(x))))
@@ -113,8 +113,8 @@ class EvolvableCNN2D(nn.Module):
         self.config = config
         self.genome = validate_and_fix_genome(genome, config)
         self.conv_layers = self._build_conv_layers()
-        pool_shape = tuple(config.get('pre_fc_pool_shape') or (4, 8))
-        self.pre_fc_pool = nn.AdaptiveAvgPool2d(pool_shape)
+        pool_shape = config_value(config, 'pre_fc_pool_shape')
+        self.pre_fc_pool = nn.Identity() if pool_shape is None else nn.AdaptiveAvgPool2d(tuple(pool_shape))
         self.conv_output_size = self._calculate_conv_output_size()
         self.fc_layers = self._build_fc_layers()
 
@@ -138,7 +138,7 @@ class EvolvableCNN2D(nn.Module):
                 ))
                 layers.append(nn.MaxPool2d(2, 2))
                 if i < count - 1:
-                    layers.append(nn.Dropout2d(0.1))
+                    layers.append(nn.Dropout2d(self.config['conv_dropout_rate']))
                 in_channels = out_channels
         elif topology == 'residual':
             block_size = int(self.genome.get('residual_block_size', 2))
@@ -159,7 +159,7 @@ class EvolvableCNN2D(nn.Module):
                         self.genome['kernel_sizes'][index:end],
                         [activations[i % len(activations)] for i in range(index, end)],
                         norm, residual_projection=self.genome.get('residual_projection', 'auto'),
-                        apply_dropout=end < count,
+                        apply_dropout=end < count, dropout_rate=self.config['conv_dropout_rate'],
                     ))
                 in_channels = out_channels
                 index = end
@@ -172,7 +172,7 @@ class EvolvableCNN2D(nn.Module):
                 ))
                 layers.append(nn.MaxPool2d(2, 2))
                 if i < count - 1:
-                    layers.append(nn.Dropout2d(0.1))
+                    layers.append(nn.Dropout2d(self.config['conv_dropout_rate']))
                 in_channels = out_channels
         return layers
 
@@ -198,7 +198,10 @@ class EvolvableCNN2D(nn.Module):
         for i, nodes in enumerate(self.genome['fc_nodes'][:self.genome['num_fc_layers']]):
             layers.append(nn.Linear(input_size, nodes))
             layers.append(nn.LayerNorm(nodes) if norm == 'layer' else nn.BatchNorm1d(nodes))
-            layers.append(nn.ReLU())
+            activation = self.config.get('fc_activation_source', 'genome')
+            if activation == 'genome':
+                activation = self.genome['activations'][i % len(self.genome['activations'])]
+            layers.append(ACTIVATION_FUNCTIONS[activation]())
             if i < self.genome['num_fc_layers'] - 1:
                 layers.append(nn.Dropout(self.genome['dropout_rate']))
             input_size = nodes

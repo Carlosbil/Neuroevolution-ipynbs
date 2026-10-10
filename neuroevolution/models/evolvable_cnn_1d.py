@@ -65,6 +65,7 @@ class ResidualConv1DBlock(nn.Module):
         normalization_type: str,
         residual_projection: str = 'auto',
         apply_dropout: bool = False,
+        dropout_rate: float = 0.1,
     ):
         super().__init__()
         self.units = nn.ModuleList()
@@ -95,7 +96,7 @@ class ResidualConv1DBlock(nn.Module):
 
         self.final_activation = ACTIVATION_FUNCTIONS[activation_names[-1]]()
         self.pool = nn.MaxPool1d(2, 2)
-        self.dropout = nn.Dropout(0.1) if apply_dropout else nn.Identity()
+        self.dropout = nn.Dropout(dropout_rate) if apply_dropout else nn.Identity()
 
     def forward(self, x):
         identity = self.shortcut(x)
@@ -308,7 +309,7 @@ class EvolvableCNN(nn.Module):
 
             # Optional dropout after pooling
             if i < self.genome['num_conv_layers'] - 1:
-                layers.append(nn.Dropout(0.1))
+                layers.append(nn.Dropout(self.config['conv_dropout_rate']))
 
             in_channels = out_channels
 
@@ -340,7 +341,7 @@ class EvolvableCNN(nn.Module):
             )
             layers.append(nn.MaxPool1d(2, 2))
             if i < self.genome['num_conv_layers'] - 1:
-                layers.append(nn.Dropout(0.1))
+                layers.append(nn.Dropout(self.config['conv_dropout_rate']))
             in_channels = out_channels
 
         return layers
@@ -369,7 +370,7 @@ class EvolvableCNN(nn.Module):
         )
         layers.append(nn.MaxPool1d(2, 2))
         if apply_dropout:
-            layers.append(nn.Dropout(0.1))
+            layers.append(nn.Dropout(self.config['conv_dropout_rate']))
         return out_channels
 
     def _build_residual_conv_layers(self, in_channels: int, normalization_type: str) -> nn.ModuleList:
@@ -412,6 +413,7 @@ class EvolvableCNN(nn.Module):
                     normalization_type,
                     residual_projection=residual_projection,
                     apply_dropout=end_index < num_conv_layers,
+                    dropout_rate=self.config['conv_dropout_rate'],
                 )
             )
             in_channels = block_filters[-1]
@@ -513,7 +515,10 @@ class EvolvableCNN(nn.Module):
                 layers.append(nn.BatchNorm1d(output_size))
 
             # Activation
-            layers.append(nn.ReLU())
+            activation = self.config.get('fc_activation_source', 'genome')
+            if activation == 'genome':
+                activation = self.genome['activations'][i % len(self.genome['activations'])]
+            layers.append(ACTIVATION_FUNCTIONS[activation]())
 
             # Dropout if not last layer
             if i < self.genome['num_fc_layers'] - 1:

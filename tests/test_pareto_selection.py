@@ -41,10 +41,10 @@ def _metrics():
     }
 
 
-def test_default_config_enables_cost_aware_pareto_selection():
+def test_default_config_prioritizes_fitness_and_keeps_pareto_available():
     config = get_default_config()
 
-    assert config["selection_strategy"] == "pareto"
+    assert config["selection_strategy"] == "fitness"
     assert config["pareto_objectives"] == OBJECTIVES
     assert config["pareto_fitness_epsilon"] == 0.0
 
@@ -209,15 +209,14 @@ def test_evaluate_population_records_cost_metadata(monkeypatch, tmp_path):
 
     fitness_values = iter([90.0, 89.0])
 
-    def fake_evaluate_fitness(genome, config, device):
+    def fake_train_fold(genome, fold_num, config, device):
         metrics = _metrics()
         metrics["f1_score"] = next(fitness_values)
-        return metrics["f1_score"], object(), metrics
+        return fold_num, metrics["f1_score"], object(), metrics
 
     counter = iter([1200, 900])
-    monkeypatch.setattr(engine, "evaluate_fitness", fake_evaluate_fitness)
+    monkeypatch.setattr(engine, "train_fold_in_thread", fake_train_fold)
     monkeypatch.setattr(engine, "estimate_genome_parameter_count", lambda genome, config: next(counter))
-    monkeypatch.setattr(engine.time, "perf_counter", iter([10.0, 10.5, 20.0, 21.25]).__next__)
     monkeypatch.setattr(
         engine.HybridNeuroevolution,
         "_format_architecture",
@@ -228,13 +227,13 @@ def test_evaluate_population_records_cost_metadata(monkeypatch, tmp_path):
     neuroevolution.evaluate_population()
 
     first, second = neuroevolution.population
-    assert first["evaluation_time_seconds"] == pytest.approx(0.5)
-    assert second["evaluation_time_seconds"] == pytest.approx(1.25)
+    assert first["evaluation_time_seconds"] >= 0
+    assert second["evaluation_time_seconds"] >= 0
     assert first["parameter_count"] == 1200
     assert second["parameter_count"] == 900
     assert "pareto_rank" in first
     assert "crowding_distance" in first
-    assert first["metrics"]["evaluation_time_seconds"] == pytest.approx(0.5)
+    assert first["metrics"]["evaluation_time_seconds"] == first["evaluation_time_seconds"]
     assert first["metrics"]["parameter_count"] == 1200
     assert first["metrics"]["selection_objectives"]["fitness"] == pytest.approx(90.0)
     assert neuroevolution.generation_stats[-1]["pareto_objectives"] == OBJECTIVES

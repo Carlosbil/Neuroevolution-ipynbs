@@ -224,7 +224,7 @@ def test_final_evaluation_reports_test_metrics_after_validation_selection(monkey
 
     result = cross_validation.evaluate_single_fold(
         {"optimizer": "adam", "learning_rate": 0.001},
-        {"epoch_patience": 5, "improvement_threshold": 0.0},
+        {"num_epochs": 1, "epoch_patience": 5, "improvement_threshold": 0.0},
         _one_batch_loader([0]),
         _one_batch_loader([0, 0]),
         _one_batch_loader([1, 1, 1]),

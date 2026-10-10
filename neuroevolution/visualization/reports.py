@@ -22,6 +22,27 @@ def _format_architecture(genome: dict) -> str:
     return format_genome_architecture(genome)
 
 
+def _display_reference_architecture(best_genome, config, neuroevolution, execution_time):
+    """Report the native graph rather than empty editable-gene placeholders."""
+    with torch.device('meta'):
+        model = EvolvableCNN(best_genome, config)
+    parameter_count = sum(parameter.numel() for parameter in model.parameters())
+    print(model.get_architecture_summary())
+    print(f"Genome: {best_genome['id']} | fitness: {best_genome['fitness']:.2f}%")
+    print(f"Optimizer: {best_genome['optimizer']} | learning rate: {best_genome['learning_rate']}")
+    print(f"Parameters: {parameter_count:,}")
+    print(model.model)
+    output_path = os.path.join(config['artifacts_dir'], 'best_reference_architecture.json')
+    os.makedirs(config['artifacts_dir'], exist_ok=True)
+    with open(output_path, 'w', encoding='utf-8') as stream:
+        json.dump({'best_genome': best_genome, 'config_used': config,
+                   'parameter_count': parameter_count, 'native_graph': str(model.model),
+                   'input_adapter': list(model.input_size),
+                   'final_generation': neuroevolution.generation,
+                   'execution_time': str(execution_time)}, stream, indent=2, default=str)
+    print(f"Results saved to: {output_path}")
+
+
 def display_best_architecture(
     best_genome: dict,
     config: dict,
@@ -37,6 +58,9 @@ def display_best_architecture(
         neuroevolution: HybridNeuroevolution instance.
         execution_time: Optional execution time metadata.
     """
+    if best_genome.get('model_kind') == 'reference':
+        _display_reference_architecture(best_genome, config, neuroevolution, execution_time)
+        return
     is_spectrogram = str(config.get('input_modality', 'audio')).lower() in {'spectrogram', 'image'}
     dimension = '2D' if is_spectrogram else '1D'
     data_name = 'spectrogram' if is_spectrogram else 'audio'
@@ -171,7 +195,7 @@ def display_best_architecture(
     print(f"   Generations used: {neuroevolution.generation}/{config['max_generations']}")
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    results_file = f"best_architecture_{data_name}_{timestamp}.json"
+    results_file = os.path.join(config['artifacts_dir'], f"best_architecture_{data_name}_{timestamp}.json")
 
     results_data = {
         "timestamp": timestamp,

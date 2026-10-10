@@ -6,6 +6,9 @@ from .evolvable_cnn_2d import EvolvableCNN2D
 
 def EvolvableCNN(genome: dict, config: dict):
     """Compatibility entry point used by training, checkpoints and reports."""
+    if genome.get('model_kind') == 'reference':
+        from .reference_architectures import ReferenceClassifier
+        return ReferenceClassifier(genome, config)
     modality = str(config.get('input_modality', 'audio')).lower()
     if modality in {'spectrogram', 'image'}:
         return EvolvableCNN2D(genome, config)

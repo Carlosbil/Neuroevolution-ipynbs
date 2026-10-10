@@ -5,7 +5,8 @@ Mutation operators for genome evolution.
 import random
 import copy
 import uuid
-from neuroevolution.config import ACTIVATION_FUNCTIONS, OPTIMIZERS
+from neuroevolution.config import ACTIVATION_FUNCTIONS, OPTIMIZERS, optimizer_learning_rates
+from neuroevolution.genetics.genome import invalidate_evaluation
 from neuroevolution.genetics.architecture_templates import apply_template_module_to_genome
 from neuroevolution.models.genome_validator import (
     architecture_spatial_limit,
@@ -202,12 +203,22 @@ def mutate_genome(genome: dict, config: dict) -> dict:
     Returns:
         Mutated genome (new copy)
     """
-    max_attempts = 50
+    if genome.get('model_kind') == 'reference':
+        mutated = invalidate_evaluation(copy.deepcopy(genome))
+        if random.random() < config['architecture_template_mutation_weight']:
+            mutated = apply_template_module_to_genome(mutated, config)
+        if random.random() < config['current_mutation_rate']:
+            mutated['optimizer'] = random.choice(config['optimizer_options'])
+        if random.random() < config['current_mutation_rate'] or mutated['learning_rate'] not in optimizer_learning_rates(config, mutated['optimizer']):
+            mutated['learning_rate'] = random.choice(optimizer_learning_rates(config, mutated['optimizer']))
+        mutated['id'] = str(uuid.uuid4())[:8]
+        mutated['innovation_genes'] = build_innovation_genes(mutated)
+        append_structural_event(mutated, 'reference_training_mutation', {'optimizer': mutated['optimizer'], 'learning_rate': mutated['learning_rate']})
+        return validate_and_fix_genome(mutated, config)
+    max_attempts = int(config.get('mutation_max_attempts', 50))
 
     for attempt in range(max_attempts):
-        mutated_genome = copy.deepcopy(genome)
-        for cached_key in ('skip_next_evaluation', 'cached_from_generation', 'metrics', 'evaluation_status'):
-            mutated_genome.pop(cached_key, None)
+        mutated_genome = invalidate_evaluation(copy.deepcopy(genome))
 
         mutation_rate = config['current_mutation_rate']
 
@@ -248,6 +259,8 @@ def mutate_genome(genome: dict, config: dict) -> dict:
         if random.random() < config.get('architecture_template_mutation_weight', 0.0):
             try:
                 mutated_genome = apply_template_module_to_genome(mutated_genome, config)
+                if mutated_genome.get('model_kind') == 'reference':
+                    return mutated_genome
             except ValueError:
                 continue
 
@@ -278,19 +291,20 @@ def mutate_genome(genome: dict, config: dict) -> dict:
         # Mutate activation functions
         for i in range(len(mutated_genome['activations'])):
             if random.random() < mutation_rate:
-                mutated_genome['activations'][i] = random.choice(list(ACTIVATION_FUNCTIONS.keys()))
+                mutated_genome['activations'][i] = random.choice(config.get('activation_options', list(ACTIVATION_FUNCTIONS)))
 
         # Mutate dropout
         if random.random() < mutation_rate:
             mutated_genome['dropout_rate'] = random.uniform(config['min_dropout'], config['max_dropout'])
 
         # Mutate learning rate
+        # Optimizer and its learning rate are coupled, rather than using an
+        # Adam-sized range for SGD without momentum.
         if random.random() < mutation_rate:
-            mutated_genome['learning_rate'] = random.choice(config['learning_rate_options'])
-
-        # Mutate optimizer
-        if random.random() < mutation_rate:
-            mutated_genome['optimizer'] = random.choice(list(OPTIMIZERS.keys()))
+            mutated_genome['optimizer'] = random.choice(config.get('optimizer_options', list(OPTIMIZERS)))
+        rates = optimizer_learning_rates(config, mutated_genome['optimizer'])
+        if random.random() < mutation_rate or mutated_genome['learning_rate'] not in rates:
+            mutated_genome['learning_rate'] = random.choice(rates)
 
         # Mutate normalization type
         if random.random() < mutation_rate:
@@ -310,9 +324,7 @@ def mutate_genome(genome: dict, config: dict) -> dict:
             return mutated_genome
 
     print(f"⚠️ Warning: Could not create valid mutation after {max_attempts} attempts. Using safe fallback.")
-    safe_genome = copy.deepcopy(genome)
-    for cached_key in ('skip_next_evaluation', 'cached_from_generation', 'metrics', 'evaluation_status'):
-        safe_genome.pop(cached_key, None)
+    safe_genome = invalidate_evaluation(copy.deepcopy(genome))
 
     safe_genome = validate_and_fix_genome(safe_genome, config)
     safe_max_conv = calculate_max_safe_conv_layers(

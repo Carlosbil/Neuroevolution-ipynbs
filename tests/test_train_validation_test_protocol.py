@@ -90,7 +90,7 @@ def test_final_evaluation_reports_held_out_test_metrics(monkeypatch):
 
     result = cross_validation.evaluate_single_fold(
         best_genome={"optimizer": "sgd", "learning_rate": 0.0},
-        config={"epoch_patience": 1, "improvement_threshold": 0.0},
+        config={"num_epochs": 1, "epoch_patience": 1, "improvement_threshold": 0.0},
         fold_train_loader=train_loader,
         fold_validation_loader=validation_loader,
         fold_test_loader=test_loader,
@@ -119,16 +119,16 @@ def test_default_config_aligns_checkpoint_and_fitness_metrics():
     assert config["checkpoint_metric"] == "f1_score"
 
 
-def test_default_config_separates_synthetic_evolution_from_real_final_evaluation():
+def test_default_config_uses_configured_vowels_source_for_both_protocol_phases():
     config = get_default_config()
 
     evolution_config = get_data_phase_config(config, "evolution")
     final_config = get_data_phase_config(config, "final_evaluation")
 
-    assert evolution_config["dataset_id"] == "40_1e5_N"
-    assert evolution_config["fold_files_subdirectory"] == "files_syn_all_N"
-    assert final_config["dataset_id"] == "real_N"
-    assert final_config["fold_files_subdirectory"] == "files_real_N"
+    assert evolution_config["dataset_id"] == "vowels"
+    assert evolution_config["fold_files_subdirectory"] == "arrays"
+    assert final_config["dataset_id"] == "vowels"
+    assert final_config["fold_files_subdirectory"] == "arrays"
 
 
 def test_final_evaluation_loads_real_source_even_when_active_source_is_synthetic(monkeypatch, tmp_path):
@@ -153,6 +153,8 @@ def test_final_evaluation_loads_real_source_even_when_active_source_is_synthetic
     })
 
     config = get_default_config(info_path=str(tmp_path))
+    config.update(num_epochs=1, dataset_id="40_1e5_N", fold_files_subdirectory="files_syn_all_N",
+                  final_dataset_id="real_N", final_fold_files_subdirectory="files_real_N")
     result = cross_validation.evaluate_5fold_cross_validation(
         best_genome={
             "num_conv_layers": 1,

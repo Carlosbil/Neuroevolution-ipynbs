@@ -5,6 +5,7 @@ Genome validation utilities for architecture safety checks.
 import math
 import numpy as np
 import random
+from ..config import config_value
 
 
 DEFAULT_RESIDUAL_BLOCK_SIZE = 2
@@ -323,7 +324,11 @@ def _estimate_2d_parameter_count(fixed: dict, config: dict) -> int:
                     conv_params += block_start_channels * in_channels + in_channels
                 block_start_channels = in_channels
 
-    pool_shape = tuple(config.get('pre_fc_pool_shape') or (4, 8))
+    pool_shape = config_value(config, 'pre_fc_pool_shape')
+    if pool_shape is None:
+        pooling_count = calculate_pooling_operation_count(count, residual, block_size, inception)
+        pool_shape = (int(config['num_frequency_bins']) // 2 ** pooling_count,
+                      int(config['sequence_length']) // 2 ** pooling_count)
     fc_input = in_channels * int(pool_shape[0]) * int(pool_shape[1])
     fc_params = 0
     for nodes in fixed.get('fc_nodes', [])[:int(fixed.get('num_fc_layers', 0))]:
@@ -338,6 +343,9 @@ def estimate_genome_parameter_count(genome: dict, config: dict) -> int:
     """
     Deterministically estimates trainable parameters without instantiating a model.
     """
+    if genome.get('model_kind') == 'reference':
+        from .reference_architectures import reference_parameter_count
+        return reference_parameter_count(genome, config)
     fixed = normalize_conv_topology_fields(
         {k: list(v) if isinstance(v, list) else v for k, v in genome.items()},
         config,
@@ -446,6 +454,13 @@ def is_genome_valid(genome: dict, config: dict) -> bool:
     Returns:
         True if genome is valid, False otherwise
     """
+    if genome.get('model_kind') == 'reference':
+        from .reference_architectures import validate_reference_genome
+        try:
+            validate_reference_genome(genome, config)
+            return True
+        except ValueError:
+            return False
     fixed = normalize_conv_topology_fields(
         {k: list(v) if isinstance(v, list) else v for k, v in genome.items()},
         config,
@@ -551,6 +566,9 @@ def validate_and_fix_genome(genome: dict, config: dict) -> dict:
     Returns:
         Fixed genome with correct list lengths
     """
+    if genome.get('model_kind') == 'reference':
+        from .reference_architectures import validate_reference_genome
+        return validate_reference_genome(genome, config)
     # Fix filters and kernel_sizes to match num_conv_layers
     num_conv = genome['num_conv_layers']
     
@@ -588,6 +606,9 @@ def validate_and_fix_genome(genome: dict, config: dict) -> dict:
 
 def stable_genome_signature(genome: dict, config: dict = None) -> tuple:
     """Returns a stable architecture signature suitable for fitness caches."""
+    if genome.get('model_kind') == 'reference':
+        return ('reference', genome['reference_architecture_id'], genome['optimizer'],
+                genome['learning_rate'], config.get('reference_dropout_rate') if config else None)
     fixed = {k: list(v) if isinstance(v, list) else v for k, v in genome.items()}
     if config is not None:
         fixed = validate_and_fix_genome(fixed, config)

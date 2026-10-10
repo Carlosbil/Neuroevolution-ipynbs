@@ -17,6 +17,9 @@ from neuroevolution.models.genome_validator import (
 def test_adaptive_pool_keeps_raw_audio_dense_layer_bounded():
     config = get_default_config()
     config.update({
+        'input_modality': 'audio',
+        'num_frequency_bins': None,
+        'pre_fc_pool_shape': None,
         'num_channels': 1,
         'sequence_length': 128,
         'pre_fc_pool_length': 8,
@@ -53,14 +56,15 @@ def test_adaptive_pool_keeps_raw_audio_dense_layer_bounded():
 
 @pytest.mark.parametrize('topology', ['sequential', 'residual', 'inception'])
 @pytest.mark.parametrize('normalization', ['batch', 'layer'])
-def test_spectrogram_uses_conv2d_and_counts_parameters(topology, normalization):
+@pytest.mark.parametrize('pool_shape', [(2, 4), None])
+def test_spectrogram_uses_conv2d_and_counts_parameters(topology, normalization, pool_shape):
     config = get_default_config()
     config.update({
         'input_modality': 'spectrogram',
         'num_channels': 1,
         'num_frequency_bins': 16,
         'sequence_length': 32,
-        'pre_fc_pool_shape': (2, 4),
+        'pre_fc_pool_shape': pool_shape,
         'min_conv_layers': 1,
         'max_conv_layers': 3,
         'min_fc_layers': 1,
@@ -90,7 +94,10 @@ def test_spectrogram_uses_conv2d_and_counts_parameters(topology, normalization):
     features = torch.randn(2, 16, 32)
     assert model(features).shape == (2, 2)
     assert model(features.unsqueeze(1)).shape == (2, 2)
-    assert model.conv_output_size == 8 * 2 * 4
+    if pool_shape is None:
+        assert isinstance(model.pre_fc_pool, torch.nn.Identity)
+    else:
+        assert model.conv_output_size == 8 * 2 * 4
     assert estimate_genome_parameter_count(model.genome, config) == sum(
         parameter.numel() for parameter in model.parameters()
     )

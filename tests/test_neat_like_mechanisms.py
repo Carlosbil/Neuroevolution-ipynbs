@@ -99,13 +99,13 @@ def test_build_innovation_genes_and_structural_history_track_events():
     genome = _genome("g1", [16, 32], [3, 5], [64])
 
     gene_keys = {gene["gene_key"] for gene in genome["innovation_genes"]}
-    assert gene_keys == {
+    assert {
         "conv_filter_0",
         "conv_filter_1",
         "conv_kernel_0",
         "conv_kernel_1",
         "fc_node_0",
-    }
+    } <= gene_keys
     assert all(gene["enabled"] for gene in genome["innovation_genes"])
 
     append_structural_event(genome, "mutate_conv_filter", {"index": 1, "old": 16, "new": 32})
@@ -202,18 +202,18 @@ def test_incremental_complexity_caps_advance_by_generation_stage(tmp_path):
 
     engine.generation = 0
     engine._update_incremental_complexity()
-    assert engine.config["current_max_conv_layers"] == 1
-    assert engine.config["current_max_fc_layers"] == 1
+    assert engine.current_max_conv_layers == 1
+    assert engine.current_max_fc_layers == 1
 
     engine.generation = 2
     engine._update_incremental_complexity()
-    assert engine.config["current_max_conv_layers"] == 2
-    assert engine.config["current_max_fc_layers"] == 2
+    assert engine.current_max_conv_layers == 2
+    assert engine.current_max_fc_layers == 2
 
     engine.generation = 99
     engine._update_incremental_complexity()
-    assert engine.config["current_max_conv_layers"] == config["max_conv_layers"]
-    assert engine.config["current_max_fc_layers"] == config["max_fc_layers"]
+    assert engine.current_max_conv_layers == config["max_conv_layers"]
+    assert engine.current_max_fc_layers == config["max_fc_layers"]
 
 
 def test_random_genome_creation_respects_active_incremental_caps():

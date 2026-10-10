@@ -36,6 +36,12 @@ def build_innovation_genes(genome: dict) -> list:
         List of gene dictionaries with innovation_id, gene_key, value, enabled
     """
     genes = []
+    if genome.get('model_kind') == 'reference':
+        for key in ('reference_architecture_id', 'optimizer', 'learning_rate'):
+            value = genome[key]
+            genes.append({'innovation_id': innovation_uuid(key, {'value': value}),
+                          'gene_key': key, 'value': value, 'enabled': True})
+        return genes
 
     for i, value in enumerate(genome.get('filters', [])):
         genes.append({
