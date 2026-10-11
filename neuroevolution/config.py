@@ -33,6 +33,7 @@ VOWELS_INPUTS = {
 
 # All experiment choices live here. Change this value to switch input profiles.
 DEFAULT_INPUT_MODALITY = 'spectrogram'
+DEFAULT_DATASET = 'old_vowels'  # 'old_vowels' or 'vowels_half'
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 REFERENCE_ARCHITECTURE_IDS = (
     'lenet5', 'resnet18', 'mobilenet_v2', 'efficientnet_b0', 'alexnet',
@@ -79,6 +80,28 @@ VOWELS_HALF_DATASET_CONFIG = {
 }
 
 
+OLD_VOWELS_DATASET_CONFIG = {
+    **VOWELS_HALF_DATASET_CONFIG,
+    'source_root': os.fspath(PROJECT_ROOT / 'old_data_do_not_use'),
+    'output_root': os.fspath(PROJECT_ROOT / 'artifacts' / 'old_vowels_dataset'),
+    'feature_id': 'old_vowels',
+    'sample_rate_hz': 24_000,
+    'normalized_duration_s': 0.48,
+    'duration_s': 0.48,
+    'audio_samples': 11_520,
+    'spectrogram_frames': 44,
+    'hop_length': 240,
+    'trim_left_s': 0.0,
+    'trim_right_s': 0.0,
+    'preparation_notebook': 'old_vowels_dataset_por_persona.ipynb',
+}
+
+DATASET_CONFIGS = {
+    'old_vowels': OLD_VOWELS_DATASET_CONFIG,
+    'vowels_half': VOWELS_HALF_DATASET_CONFIG,
+}
+
+
 def configure_vowels_input(config: dict, dataset_root: str = None) -> dict:
     """Validate configured arrays without changing any experiment option."""
     modality = str(config.get('input_modality', 'audio')).strip().lower()
@@ -94,7 +117,7 @@ def configure_vowels_input(config: dict, dataset_root: str = None) -> dict:
     dataset_id = config.get('dataset_id', 'vowels')
     first_fold = os.path.join(dataset_root, array_directory, f'X_train_{dataset_id}_fold_1.npy')
     if not os.path.isfile(first_fold):
-        notebook = config.get('dataset_preparation_notebook', VOWELS_HALF_DATASET_CONFIG['preparation_notebook'])
+        notebook = config.get('dataset_preparation_notebook', DATASET_CONFIGS[DEFAULT_DATASET]['preparation_notebook'])
         raise FileNotFoundError(f"Run {notebook} first: {first_fold}")
     shape = np.load(first_fold, mmap_mode='r').shape
     if len(shape) != 3 or shape[0] < 1:
@@ -232,11 +255,11 @@ def get_default_config(info_path: str = None) -> dict:
         Dictionary with all configuration parameters
     """
     if info_path is None:
-        info_path = os.fspath(PROJECT_ROOT / 'artifacts' / f'test_vowels_half_{DEFAULT_INPUT_MODALITY}')
+        info_path = os.fspath(PROJECT_ROOT / 'artifacts' / f'test_{DEFAULT_DATASET}_{DEFAULT_INPUT_MODALITY}')
     
     modality = DEFAULT_INPUT_MODALITY
     profile = VOWELS_INPUTS[modality]
-    dataset_config = VOWELS_HALF_DATASET_CONFIG
+    dataset_config = DATASET_CONFIGS[DEFAULT_DATASET]
     return {
         'seed': 42,
         'resume_evolution': False,
@@ -731,7 +754,10 @@ CONFIG = get_default_config()
 def get_winner_replay_config() -> dict:
     """One sequential CV pass of the uploaded winner using its genome activations."""
     config = get_default_config()
-    output = os.fspath(PROJECT_ROOT / 'artifacts' / 'winner_68e15b97_genome_activations')
+    output = os.fspath(
+        PROJECT_ROOT / 'artifacts' /
+        f'winner_68e15b97_{DEFAULT_DATASET}_{DEFAULT_INPUT_MODALITY}_genome_activations'
+    )
     config.update({
         'winner_progress_path': 'C:/Users/carlo/Downloads/evolution_progress.json',
         'winner_expected_id': '68e15b97',

@@ -89,8 +89,11 @@ cada array con su fichero individual y sus etiquetas. Se puede repetir con:
 
 ## Uso con el entrenamiento
 
-El experimento actual de `config.py` se mantiene. Para usar estos datos, establecer
-en la configuración del experimento:
+El dataset activo de `config.py` es `DEFAULT_DATASET = 'old_vowels'`.
+`DEFAULT_INPUT_MODALITY` selecciona `'audio'` o `'spectrogram'`; el perfil aplica
+automáticamente estas rutas, dimensiones e IDs a `test.ipynb` y sus scripts.
+Para volver al dataset recortado, seleccionar `DEFAULT_DATASET = 'vowels_half'`.
+Reiniciar el kernel del notebook después de cambiar cualquiera de los selectores.
 
 | Campo | Audio | Espectrograma |
 |---|---|---|
@@ -104,10 +107,13 @@ En ambos casos: `data_path = artifacts/old_vowels_dataset`,
 `dataset_id = old_vowels`, `num_folds = 5`, `audio_sample_rate_hz = 24000`,
 `audio_duration_s = 0.48` y
 `dataset_preparation_notebook = old_vowels_dataset_por_persona.ipynb`.
-Establecer también `evolution_dataset_id` y `final_dataset_id` a `old_vowels`, y
-`evolution_fold_files_subdirectory` y `final_fold_files_subdirectory` al directorio
-de la modalidad elegida. La comprobación `configure_vowels_input` utiliza el ID
-configurado para localizar el primer fold.
+El perfil establece también `evolution_dataset_id` y `final_dataset_id` a
+`old_vowels`, y los directorios de ambas fases a la modalidad elegida.
+La comprobación `configure_vowels_input` utiliza el ID configurado.
+`test.ipynb` obtiene los recuentos de los CSV y comprueba que test solo contiene
+60 audios reales. Los resultados van a `artifacts/test_old_vowels_<modalidad>/`.
+El runner del ganador usa un directorio propio por dataset y modalidad, y el
+script científico lee la configuración de esa ejecución guardada en `results.json`.
 
 Este reparto garantiza la separación de personas en los archivos exportados.
 Las carpetas de origen no documentan las personas usadas para entrenar BigVSAN;

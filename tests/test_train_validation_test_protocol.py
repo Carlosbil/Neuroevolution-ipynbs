@@ -125,9 +125,9 @@ def test_default_config_uses_configured_vowels_source_for_both_protocol_phases()
     evolution_config = get_data_phase_config(config, "evolution")
     final_config = get_data_phase_config(config, "final_evaluation")
 
-    assert evolution_config["dataset_id"] == "vowels"
+    assert evolution_config["dataset_id"] == "old_vowels"
     assert evolution_config["fold_files_subdirectory"] == "arrays"
-    assert final_config["dataset_id"] == "vowels"
+    assert final_config["dataset_id"] == "old_vowels"
     assert final_config["fold_files_subdirectory"] == "arrays"
 
 

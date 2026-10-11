@@ -16,6 +16,11 @@ from neuroevolution.config import (
 from neuroevolution.models.evolvable_cnn import EvolvableCNN
 
 
+@pytest.fixture(autouse=True)
+def select_cropped_dataset(monkeypatch):
+    monkeypatch.setattr(config_module, 'DEFAULT_DATASET', 'vowels_half')
+
+
 @pytest.mark.parametrize('modality,shape', [('audio', (1, 154350)), ('spectrogram', (64, 348))])
 def test_cropped_inputs_load_and_run_in_both_modalities(monkeypatch, tmp_path, modality, shape):
     monkeypatch.setattr(config_module, 'DEFAULT_INPUT_MODALITY', modality)

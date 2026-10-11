@@ -109,7 +109,8 @@ def load_split(root, config, split, fold=None):
     y = np.load(arrays / f'y_{split}_{config["dataset_id"]}{suffix}.npy')
     assert len(rows) == len(x) and np.array_equal(rows.label_binary.to_numpy(), y)
     # Verify sample order, including within-class person identities.
-    assert all(np.array_equal(x[i], np.load(root / row.image_npy_path))
+    path_column = 'audio_npy_path' if config['input_modality'] == 'audio' else 'image_npy_path'
+    assert all(np.array_equal(x[i], np.load(root / getattr(row, path_column)))
                for i, row in enumerate(rows.itertuples(index=False)))
     return rows, x, y
 
@@ -262,7 +263,6 @@ def finalize_report(run, results, output, config, settings):
 
 def make_figures(run, datasets, output, config, language='es'):
     translations = {
-        'Test: 300 grabaciones': 'Test: 300 recordings', 'Test: 20 personas': 'Test: 20 participants',
         'Patológicas': 'Pathological', 'Predicción': 'Predicted class', 'Clase real': 'True class',
         'Grabaciones': 'Recordings', 'Personas': 'Participants', 'Azar': 'Chance',
         'Prevalencia 50 %': 'Prevalence: 50%', 'ROC del test': 'Test ROC curve',
@@ -274,8 +274,11 @@ def make_figures(run, datasets, output, config, language='es'):
     suffix = '_en' if language == 'en' else ''
     plt.rcParams.update({'font.size': 10, 'axes.spines.top': False, 'axes.spines.right': False})
     fig, axes = plt.subplots(1, 2, figsize=(11, 4.5))
-    for axis, name, title in zip(axes, ('test_recordings', 'test_people'), ('Test: 300 grabaciones', 'Test: 20 personas')):
+    for axis, name in zip(axes, ('test_recordings', 'test_people')):
         frame = datasets[name]
+        unit = ('recordings' if name == 'test_recordings' else 'participants') if language == 'en' else (
+            'grabaciones' if name == 'test_recordings' else 'personas')
+        title = f'Test: {len(frame)} {unit}'
         cm = confusion_matrix(frame.y_true, frame.y_pred, labels=[0, 1])
         axis.imshow(cm, cmap='Blues', vmin=0)
         for i in range(2):
@@ -322,7 +325,56 @@ def make_figures(run, datasets, output, config, language='es'):
     plt.close(fig)
 
 
+def saved_run_descriptions(run, result, language='es'):
+    """Describe the actual saved run rather than a previous experiment's constants."""
+    config, genome = run['config'], run['genome']
+    splits = result['dataset_splits']
+    fold_id = result['protocol']['selected_fold']
+    fold = next(item for item in run['folds'] if item['fold'] == fold_id)
+    epoch = fold['metrics']['best_epoch']
+    population = '; '.join(f"{name}: {value['people']} / {value['recordings']}"
+                           for name, value in splits.items())
+    shape = ((1, config['sequence_length']) if config['input_modality'] == 'audio'
+             else (config['num_frequency_bins'], config['sequence_length']))
+    root = Path(config['data_path'])
+    representation_file = root / ('audio_config.json' if config['input_modality'] == 'audio' else 'feature_config.json')
+    representation = json.loads(representation_file.read_text(encoding='utf-8'))
+    manifest = pd.read_csv(root / 'manifest.csv')
+    origins = manifest.origin.value_counts().to_dict() if 'origin' in manifest else {'real': len(manifest)}
+    dataset_file = root / 'dataset_config.json'
+    excluded = json.loads(dataset_file.read_text()).get('excluded_test_generated_audios', 0) if dataset_file.exists() else 0
+    fold_counts = '; '.join(
+        f"{item['fold']}: {splits['train']['recordings'] - item['samples']} / {item['samples']}"
+        for item in result['folds'])
+    architecture = {key: genome.get(key) for key in (
+        'id', 'num_conv_layers', 'filters', 'kernel_sizes', 'activations', 'fc_nodes',
+        'normalization_type', 'conv_topology', 'dropout_rate')}
+    architecture['fc_activations'] = format_fc_activations(genome, config)
+    training = {key: config.get(key) for key in (
+        'batch_size', 'num_epochs', 'epoch_patience', 'fold_selection_metric',
+        'use_amp', 'amp_dtype', 'seed', 'fold_seed_stride')}
+    training.update(optimizer=genome['optimizer'], learning_rate=genome['learning_rate'])
+    if language == 'en':
+        return {
+            'selection': f'Fold {fold_id}, epoch {epoch}, selected using validation before inspecting test predictions. No further training or test-based tuning.',
+            'cv': f'Fold training / validation recording counts: {fold_counts}. OOF includes {splits["train"]["recordings"]} recordings from {splits["train"]["people"]} participants, each evaluated by a model trained on other participants.',
+            'data': f'Dataset {config["dataset_id"]}. Participants / recordings: {population}. Retained origins: {origins}. Generated test recordings removed: {excluded}; they were not reassigned to train or val.',
+            'input': f'Input {config["input_modality"]}, shape {shape}, {config["audio_sample_rate_hz"]} Hz, {config["audio_duration_s"]} s. Representation: {json.dumps(representation)}.',
+            'architecture': f'Saved architecture: {json.dumps(architecture)}.',
+            'training': f'Saved training settings: {json.dumps(training)}. Fresh weights for each fold; validation selects the checkpoint and test reports final metrics.',
+        }
+    return {
+        'selection': f'Fold {fold_id}, época {epoch}, elegido mediante validación antes de consultar test. Sin entrenamiento adicional ni ajustes con test.',
+        'cv': f'Grabaciones de entrenamiento / validación por fold: {fold_counts}. OOF reúne {splits["train"]["recordings"]} grabaciones de {splits["train"]["people"]} personas, cada una evaluada por un modelo entrenado con otras personas.',
+        'data': f'Dataset {config["dataset_id"]}. Personas / grabaciones: {population}. Orígenes conservados: {origins}. Generados de test quitados: {excluded}; no se trasladaron a train ni a val.',
+        'input': f'Entrada {config["input_modality"]}, forma {shape}, {config["audio_sample_rate_hz"]} Hz, {config["audio_duration_s"]} s. Representación: {json.dumps(representation, ensure_ascii=False)}.',
+        'architecture': f'Arquitectura guardada: {json.dumps(architecture, ensure_ascii=False)}.',
+        'training': f'Configuración de entrenamiento guardada: {json.dumps(training, ensure_ascii=False)}. Pesos nuevos por fold; validación selecciona el checkpoint y test calcula las métricas finales.',
+    }
+
+
 def write_report(run, result, output, config):
+    descriptions = saved_run_descriptions(run, result)
     labels = {'accuracy': 'Exactitud', 'balanced_accuracy': 'Exactitud equilibrada',
               'sensitivity': 'Sensibilidad / recall', 'specificity': 'Especificidad',
               'precision': 'Precisión / VPP', 'npv': 'Valor predictivo negativo',
@@ -333,9 +385,7 @@ def write_report(run, result, output, config):
               'false_positive_rate': 'Tasa falsos positivos', 'false_negative_rate': 'Tasa falsos negativos'}
     lines = ['# Resultados científicos de la arquitectura 68e15b97', '',
              '## Resultado final en el test reservado', '',
-             'Modelo fijado antes de consultar el test: checkpoint del fold 5, época 68, elegido por el mayor F1 de validación. '
-             'No hubo entrenamiento adicional, elección de umbral ni ajustes después de observar el test. '
-             'El modelo se entrenó con 56 personas; no es un modelo reentrenado con las 70 personas de desarrollo.', '',
+             descriptions['selection'], '',
              '| Métrica | Grabaciones: estimación [IC 95 %] | Personas: estimación [IC 95 %] |',
              '|---|---:|---:|']
     for key, label in labels.items():
@@ -349,13 +399,13 @@ def write_report(run, result, output, config):
     lines += ['', 'Las métricas de proporción y las AUC se expresan en %. MCC, kappa, Brier y log loss conservan su escala propia. '
               'AP es average precision, no el área trapezoidal de la curva PR. Brier y log loss: menor es mejor.', '',
               'Para las grabaciones y las métricas compuestas, los IC son percentiles 2,5 y 97,5 de 2.000 remuestreos estratificados por clase a nivel de persona. '
-              'Cada persona arrastra sus 15 grabaciones. En test se remuestrean 10 controles y 10 personas patológicas; '
-              'no se tratan las 300 grabaciones como 300 sujetos independientes. Los IC son condicionales al modelo guardado '
+              'Cada persona arrastra todas sus grabaciones. En test se remuestrean 10 controles y 10 personas patológicas; '
+              'no se tratan las grabaciones como sujetos independientes. Los IC son condicionales al modelo guardado '
               'y al balance de clases; no incluyen variabilidad por reentrenamiento. En personas, sensibilidad, especificidad, VPP, VPN '
               'y tasas de error usan IC binomiales exactos de Clopper–Pearson. Así, 10/10 positivos detectados no produce un IC '
               'engañoso de [100, 100]: el IC de sensibilidad es [69,15, 100] %. VPP y VPN corresponden al balance 50/50 de esta muestra, '
               'no a una prevalencia poblacional estimada.', '',
-              'Para la evaluación por persona se promedian las probabilidades de sus 15 audios y se predice patología '
+              'Para la evaluación por persona se promedian las probabilidades de todos sus audios y se predice patología '
               f"cuando la media supera {get_scientific_evaluation_config()['person_probability_threshold']}. Esta agregación es un análisis secundario predefinido, "
               'no una regla optimizada con el test.', '',
               '![Matrices de confusión](test_confusion_matrices.png)', '',
@@ -376,43 +426,22 @@ def write_report(run, result, output, config):
         lines.append(f"| {label} | {value['mean']:.{digits}f} ± {value['sd']:.{digits}f} |")
     lines += ['', 'La DE usa n−1 (cinco folds). El JSON de entrenamiento usa n para la dispersión del F1: '
               f"{run['std_f1']:.2f} puntos. Son convenciones distintas; ±DE no es un intervalo de confianza.", '',
-              'Cada fold evalúa 210 grabaciones de 14 personas (7 controles y 7 patológicas), '
-              'entrenando con 840 grabaciones de otras 56 personas. Las predicciones fuera de fold reúnen '
-              '1.050 grabaciones de 70 personas, cada audio evaluado solo por el modelo que no vio su persona al entrenar. '
+              descriptions['cv'] + ' ' +
               'Las métricas agregadas OOF y sus IC están en scientific_results.json y metrics_with_confidence_intervals.csv; '
               'la media de métricas por fold puede diferir de calcularlas sobre todas las predicciones juntas.', '',
               '![Curvas de validación por época](validation_training_curves.png)', '',
               '## Datos y protocolo', '',
-              '100 personas, 50 Control y 50 Patologicas; 1.500 grabaciones, cinco vocales × tres repeticiones por persona. '
-              'Partición estratificada y separada por persona: train 70 (1.050 audios), val global 10 (150), test 20 (300). '
-              'Se verificaron ausencia de solapamientos de personas, etiquetas y orden de los arrays frente a los CSV y los .npy individuales. '
-              'Clase positiva: Patologicas (1); negativa: Control (0).', '',
-              'Entrada: log-mel de potencia, 64 × 648; audio mono 44.100 Hz, duración 6,5 s con recorte/relleno. '
-              'STFT: n_fft=1.024, hop=441; 64 bandas mel entre 80 y 8.000 Hz; transformación log1p(1000 × mel_power). '
-              'La duración se fijó con el percentil 95 de train, redondeado a décimas de segundo; 48/1.050 audios de train se recortaron. '
-              'Los audios cortos se rellenan con ceros a ambos lados; para los largos se conserva la ventana de 6,5 s de máxima energía. '
-              'Los filtros mel triangulares se normalizan por la suma de sus coeficientes; el PCM se escala por 32.768 antes de la STFT. '
-              'No se aplicaron aumentos de datos en esta pasada.', '',
+              descriptions['data'], '',
+              descriptions['input'], '',
               '## Arquitectura y entrenamiento', '',
-              'CNN 2D residual: cinco convoluciones, filtros [188, 221, 64, 205, 115], kernels [5, 7, 3, 15, 9]. '
-              'Dos bloques residuales de dos convoluciones y una convolución final; proyecciones 1×1 cuando cambia el número de canales. '
-              'Activaciones convolucionales cíclicas [ReLU, tanh, LeakyReLU, ReLU, tanh]; batch normalization. '
-              'Max-pooling después de cada bloque y de la última convolución, dropout convolucional 0,1. '
-              'Pooling medio adaptativo 4×8; capas densas [488, 278, 247] y salida de dos logits. '
-              f"Activaciones de las densas ocultas: {format_fc_activations(run['genome'], run['config'])}; "
-              'dropout denso 0,425527 entre capas ocultas. '
-              '9.081.459 parámetros entrenables.', '',
-              'AdamW, learning rate 5×10⁻⁵, weight decay 0,01; pérdida cross-entropy; batch 8. '
-              'Betas por defecto de AdamW (0,9; 0,999), epsilon 10⁻⁸; sin pesos de clase. '
-              'Máximo 100 épocas; validación cada época y selección del mejor F1, mejora mínima 0,01 puntos; '
-              'parada tras 18 épocas sin mejora. Sin scheduler ni preentrenamiento. '
-              'Una pasada de los cinco folds, secuencial, semillas 42–46 y pesos nuevos en cada fold.', '',
+              descriptions['architecture'], '',
+              descriptions['training'], '',
               'Predicciones por grabación: argmax de los dos logits; las probabilidades softmax se obtienen con AMP BF16 '
               'y se exportan como float32, reproduciendo el cálculo del entrenamiento. No se optimiza un umbral en test.', '',
-              f"NVIDIA GeForce RTX 5080; PyTorch {run['torch_version']}; CUDA {run['cuda_version']}; AMP BF16. "
+              f"{run['device']}; PyTorch {run['torch_version']}; CUDA {run['cuda_version']}; AMP BF16. "
               f"Tiempo total: {run['elapsed_seconds'] / 60:.2f} min; {sum(f['metrics']['epochs_completed'] for f in run['folds'])} épocas ejecutadas. "
               'La configuración efectiva y los checkpoints se conservan en results.json y fold_N_best.pt.', '',
-              f"El forward por lotes y las transferencias de los 300 audios de test tardaron {result['test_inference_seconds']:.3f} s "
+              f"El forward por lotes y las transferencias de los {result['test_recordings']['metrics']['samples']} audios de test tardaron {result['test_inference_seconds']:.3f} s "
               '(modelo ya cargado y GPU previamente usada). Esta medida excluye extracción de log-mel y carga desde disco; '
               'no es latencia de un sistema completo.', '',
               f"Entorno de análisis: {json.dumps(result['analysis_environment'], ensure_ascii=False)}.", '',
@@ -438,10 +467,10 @@ def write_report(run, result, output, config):
     t, p = result['test_recordings']['metrics'], result['test_people']['metrics']
     lines.append(f"La arquitectura seleccionada alcanzó un F1 medio de {run['mean_f1']:.2f} % "
                  f"(DE muestral {result['fold_mean_sample_sd']['f1_score']['sd']:.2f}) en cinco folds internos separados por persona. "
-                 f"El checkpoint seleccionado mediante validación obtuvo, en el test reservado de 20 participantes y 300 grabaciones, "
+                 f"El checkpoint seleccionado mediante validación obtuvo, en el test reservado de {p['people']} participantes y {t['samples']} grabaciones, "
                  f"exactitud del {t['accuracy']:.2f} %, sensibilidad del {t['sensitivity']:.2f} %, especificidad del {t['specificity']:.2f} %, "
                  f"F1 del {t['f1_score']:.2f} % y ROC-AUC de {t['roc_auc'] / 100:.3f}. "
-                 f"La agregación secundaria de las 15 grabaciones por participante obtuvo exactitud del {p['accuracy']:.2f} % "
+                 f"La agregación secundaria de todas las grabaciones por participante obtuvo exactitud del {p['accuracy']:.2f} % "
                  f"y F1 del {p['f1_score']:.2f} %. Los intervalos de confianza se estimaron mediante bootstrap estratificado por participante.")
     lines += ['', '## Fuentes metodológicas y archivos auditables', '',
               '- [Definiciones de métricas, scikit-learn](https://scikit-learn.org/stable/modules/model_evaluation.html).',
