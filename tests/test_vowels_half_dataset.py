@@ -68,3 +68,22 @@ def test_original_preparation_keeps_its_output_directory():
     assert VOWELS_HALF_DATASET_CONFIG['audio_samples'] == kept_samples
     frames = 1 + (kept_samples - VOWELS_HALF_DATASET_CONFIG['n_fft']) // VOWELS_HALF_DATASET_CONFIG['hop_length']
     assert VOWELS_HALF_DATASET_CONFIG['spectrogram_frames'] == frames
+
+
+@pytest.mark.parametrize('modality,shape,directory', [
+    ('audio', (1, 11520), 'arrays_audio'),
+    ('spectrogram', (64, 44), 'arrays'),
+])
+def test_named_old_dataset_inputs_use_configured_dataset_id(tmp_path, modality, shape, directory):
+    config = get_default_config()
+    config.update({
+        'dataset_id': 'old_vowels', 'data_path': str(tmp_path),
+        'input_modality': modality, 'fold_files_subdirectory': directory,
+        'num_channels': 1, 'num_frequency_bins': 64 if modality == 'spectrogram' else None,
+        'sequence_length': shape[-1],
+        'dataset_preparation_notebook': 'old_vowels_dataset_por_persona.ipynb',
+    })
+    array_root = tmp_path / directory
+    array_root.mkdir()
+    np.save(array_root / 'X_train_old_vowels_fold_1.npy', np.zeros((2, *shape), dtype=np.float32))
+    assert configure_vowels_input(config) is config

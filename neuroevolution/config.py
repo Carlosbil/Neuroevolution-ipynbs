@@ -91,7 +91,8 @@ def configure_vowels_input(config: dict, dataset_root: str = None) -> dict:
     if Path(dataset_root).resolve() != Path(config['data_path']).resolve():
         raise ValueError('Set data_path in config.py; the notebook cannot replace it')
     array_directory = config['fold_files_subdirectory']
-    first_fold = os.path.join(dataset_root, array_directory, 'X_train_vowels_fold_1.npy')
+    dataset_id = config.get('dataset_id', 'vowels')
+    first_fold = os.path.join(dataset_root, array_directory, f'X_train_{dataset_id}_fold_1.npy')
     if not os.path.isfile(first_fold):
         notebook = config.get('dataset_preparation_notebook', VOWELS_HALF_DATASET_CONFIG['preparation_notebook'])
         raise FileNotFoundError(f"Run {notebook} first: {first_fold}")
