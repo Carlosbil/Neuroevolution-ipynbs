@@ -5,9 +5,10 @@ Device configuration and seed management utilities.
 import torch
 import numpy as np
 import random
+from .config import CONFIG
 
 
-SEED = 42
+SEED = CONFIG['seed']
 
 
 def setup_seeds(seed: int = SEED) -> None:

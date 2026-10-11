@@ -63,7 +63,7 @@ def calculate_metrics(y_true: np.ndarray, y_pred: np.ndarray, y_probs: np.ndarra
 
 def aggregate_fold_metrics(fold_metrics: list) -> Dict[str, float]:
     """
-    Aggregate metrics from multiple folds (e.g., 5-fold CV).
+    Aggregate metrics from multiple folds.
 
     Args:
         fold_metrics: List of metric dictionaries from each fold

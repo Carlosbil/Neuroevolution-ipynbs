@@ -1,8 +1,8 @@
 """
-Fitness evaluation module for parallel 5-fold cross-validation.
+Fitness evaluation module for parallel 5-fold train/validation/test evaluations.
 
-This module implements parallel training and evaluation of genomes using ThreadPoolExecutor
-to run all 5 folds simultaneously. Fitness is calculated as the average F1-score across folds.
+This module implements parallel training and validation of genomes using ThreadPoolExecutor
+to run all 5 folds simultaneously. Fitness is calculated as the average validation F1-score.
 """
 
 import os
@@ -11,12 +11,20 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from dataclasses import dataclass
 from torch.utils.data import DataLoader
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Tuple
 
 from ..models.evolvable_cnn import EvolvableCNN
-from ..config import OPTIMIZERS, SUPPORTED_METRIC_NAMES, canonical_metric_name
+from ..models.reference_architectures import classification_loss
+from ..config import make_optimizer, config_value
+from ..config import (
+    OPTIMIZERS,
+    SUPPORTED_METRIC_NAMES,
+    canonical_metric_name,
+    get_data_phase_config,
+)
 
 _FOLD_DATALOADER_CACHE = {}
 _FOLD_DATALOADER_CACHE_LOCK = threading.Lock()
@@ -120,9 +128,18 @@ def _normalize_eval_split(eval_split: str) -> str:
     return normalized
 
 
+@dataclass(frozen=True)
+class FoldLoaders:
+    """Named DataLoader contract for one train/validation/test fold."""
+
+    train: DataLoader
+    validation: DataLoader
+    test: DataLoader
+
+
 def _resolve_fold_files_directory(config: dict) -> str:
     """Resolves fold directory from config, preferring explicit subdirectory when available."""
-    fold_subdir = config.get('fold_files_subdirectory', f"files_real_{config['fold_id']}")
+    fold_subdir = config_value(config, 'fold_files_subdirectory')
     return os.path.join(config['data_path'], fold_subdir)
 
 
@@ -149,9 +166,9 @@ def _resolve_dataloader_settings(config: dict, device: torch.device) -> Tuple[in
 
 def _resolve_cache_mode(config: dict) -> str:
     """Returns validated fold cache mode."""
-    cache_mode = str(config.get('fold_cache_mode', 'ram')).lower()
+    cache_mode = str(config_value(config, 'fold_cache_mode')).lower()
     if cache_mode not in {'none', 'ram', 'memmap'}:
-        cache_mode = 'ram'
+        raise ValueError('fold_cache_mode must be configured as none, ram or memmap')
     return cache_mode
 
 
@@ -185,9 +202,142 @@ def _load_numpy_array(path: str, cache_mode: str) -> np.ndarray:
     return np.load(path)
 
 
+def checkpoint_selection_score(metrics: dict, config: dict) -> float:
+    """Returns the validation metric used to select checkpoints."""
+    metric_name = str(config.get('checkpoint_metric', config.get('fitness_metric', 'f1_score')))
+    return float(metrics.get(metric_name, metrics.get('f1_score', 0.0)))
+
+
+def _metrics_from_predictions(y_true: np.ndarray, y_pred: np.ndarray, all_probs: list) -> dict:
+    """Calculates binary classification metrics from predictions."""
+    tp = np.sum((y_true == 1) & (y_pred == 1))
+    tn = np.sum((y_true == 0) & (y_pred == 0))
+    fp = np.sum((y_true == 0) & (y_pred == 1))
+    fn = np.sum((y_true == 1) & (y_pred == 0))
+
+    accuracy = 100.0 * (tp + tn) / max(1, len(y_true))
+    sensitivity = 100.0 * tp / max(1, tp + fn)
+    specificity = 100.0 * tn / max(1, tn + fp)
+    precision = 100.0 * tp / max(1, tp + fp)
+    f1_score = 2.0 * precision * sensitivity / max(1e-8, precision + sensitivity)
+
+    auc = 0.0
+    if len(np.unique(y_true)) > 1:
+        try:
+            from sklearn.metrics import roc_auc_score
+            auc = float(roc_auc_score(y_true, np.array(all_probs)) * 100.0)
+        except Exception:
+            auc = 0.0
+
+    return {
+        'accuracy': float(accuracy),
+        'sensitivity': float(sensitivity),
+        'specificity': float(specificity),
+        'precision': float(precision),
+        'f1_score': float(f1_score),
+        'auc': float(auc)
+    }
+
+
+def _evaluate_model_on_loader(
+    model: nn.Module,
+    loader: DataLoader,
+    device: torch.device,
+    autocast_device_type: str,
+    amp_dtype: torch.dtype,
+    amp_enabled: bool,
+) -> dict:
+    """Evaluates model metrics on a single loader."""
+    model.eval()
+    all_targets = []
+    all_preds = []
+    all_probs = []
+
+    with torch.no_grad():
+        for data, target in loader:
+            data = data.to(device, non_blocking=True)
+            target = target.to(device, non_blocking=True)
+            with torch.autocast(device_type=autocast_device_type, dtype=amp_dtype, enabled=amp_enabled):
+                output = model(data)
+            probs = F.softmax(output, dim=1)
+            _, predicted = torch.max(output, 1)
+
+            all_targets.extend(target.cpu().numpy().tolist())
+            all_preds.extend(predicted.cpu().numpy().tolist())
+            # NumPy does not support BF16 tensors.  AMP may produce BF16
+            # probabilities on CUDA, so promote only the values exported for
+            # metric calculation; model computation remains in AMP precision.
+            all_probs.extend(probs[:, 1].float().cpu().numpy().tolist())
+
+    return _metrics_from_predictions(np.array(all_targets), np.array(all_preds), all_probs)
+
+
+def aggregate_fold_results(genome: dict, config: dict, fold_results: dict) -> Tuple[float, nn.Module, dict]:
+    """Combine completed folds for one individual in fold-number order."""
+    fitness_metric = resolve_metric_name(config, 'fitness_metric')
+    selection_metric = resolve_metric_name(config, 'fold_selection_metric')
+    expected_folds = set(range(1, int(config.get('num_folds', 5)) + 1))
+    if set(fold_results) != expected_folds:
+        raise ValueError(f"Incomplete fold results for {genome['id']}: {sorted(fold_results)}")
+
+    sorted_folds = sorted(fold_results)
+    fold_scores = {fold: fold_results[fold][0] for fold in sorted_folds}
+    fold_models = {fold: fold_results[fold][1] for fold in sorted_folds}
+    fold_metrics = {fold: fold_results[fold][2] for fold in sorted_folds}
+    fold_scores_list = [fold_scores[fold] for fold in sorted_folds]
+    best_fold_num = max(sorted_folds, key=fold_scores.get)
+    best_fold_score = fold_scores[best_fold_num]
+    best_model = fold_models[best_fold_num]
+    avg_fitness = float(np.mean(fold_scores_list))
+    std_fitness = float(np.std(fold_scores_list))
+    valid_metrics = [metrics for metrics in fold_metrics.values() if metrics is not None]
+
+    metric_names = ('accuracy', 'sensitivity', 'specificity', 'precision', 'f1_score', 'auc')
+    aggregated_metrics = {}
+    for name in metric_names:
+        values = [metrics[name] for metrics in valid_metrics]
+        aggregated_metrics[name] = float(np.mean(values)) if values else 0.0
+        aggregated_metrics[f'{name}_std'] = float(np.std(values)) if values else 0.0
+    aggregated_metrics.update({
+        'fold_metrics': fold_metrics if valid_metrics else {},
+        'n_valid_folds': len(valid_metrics),
+        'fitness_split': 'validation',
+        'fitness_metric': fitness_metric,
+        'selection_metric': selection_metric,
+        'parameter_count': next((metrics['parameter_count'] for metrics in valid_metrics if 'parameter_count' in metrics), None),
+    })
+    feasible = (
+        (not config.get('require_all_folds', True) or len(valid_metrics) == len(expected_folds))
+        and aggregated_metrics['specificity'] >= float(config.get('minimum_specificity', 0.0))
+        and aggregated_metrics['sensitivity'] >= float(config.get('minimum_sensitivity', 0.0))
+    )
+    aggregated_metrics['raw_fitness'] = avg_fitness
+    aggregated_metrics['fitness_feasible'] = feasible
+    if not feasible:
+        avg_fitness = 0.0
+
+    print(f"      + {len(sorted_folds)}-Fold CV Results for {genome['id']}:")
+    print(f"        Fold validation {fitness_metric} scores: {[f'{score:.2f}%' for score in fold_scores_list]}")
+    print(f"        Average validation fitness: {avg_fitness:.2f}% +/- {std_fitness:.2f}%")
+    print(f"        Best fold: Fold {best_fold_num} with {best_fold_score:.2f}% validation {fitness_metric}")
+    return avg_fitness, best_model, aggregated_metrics
+
+
+def train_fold_on_cuda_stream(genome: dict, fold_num: int, config: dict, device: torch.device):
+    """Keep one fold's CUDA allocations and kernels on its own stream."""
+    if device.type != 'cuda':
+        return train_fold_in_thread(genome, fold_num, config, device)
+    stream = torch.cuda.Stream(device=device)
+    with torch.cuda.stream(stream):
+        result = train_fold_in_thread(genome, fold_num, config, device)
+    # The model may be consumed by the main thread after this future completes.
+    stream.synchronize()
+    return result
+
+
 def evaluate_fitness(genome: dict, config: dict, device: torch.device) -> Tuple[float, nn.Module, dict]:
     """
-    Evalua el fitness de un genoma usando 5-fold cross-validation PARALELO.
+    Evalua el fitness de un genoma usando 5 particiones train/validation/test en paralelo.
     Los 5 folds se entrenan en threads separados y se espera a que terminen todos.
     El fitness final es el promedio de la métrica de fitness configurada.
 
@@ -202,7 +352,10 @@ def evaluate_fitness(genome: dict, config: dict, device: torch.device) -> Tuple[
             - model: modelo entrenado en el mejor fold (para checkpoint)
             - metrics: diccionario con metricas agregadas de todos los folds
     """
-    print(f"      Training/Evaluating model {genome['id']} with PARALLEL 5-FOLD CROSS-VALIDATION")
+    print(
+        f"      Training/evaluating model {genome['id']} with PARALLEL "
+        "5-FOLD SYNTHETIC TRAIN/VALIDATION PROTOCOL"
+    )
 
     fold_scores = {}
     fold_models = {}
@@ -211,6 +364,9 @@ def evaluate_fitness(genome: dict, config: dict, device: torch.device) -> Tuple[
     selection_metric = 'f1_score'
 
     try:
+        # The complete evolutionary loop is isolated to the synthetic source.
+        # Final real-data evaluation is performed only by cross_validation.py.
+        evolution_config = get_data_phase_config(config, 'evolution')
         fitness_metric = resolve_metric_name(config, 'fitness_metric')
         selection_metric = resolve_metric_name(config, 'fold_selection_metric')
         num_folds = int(config.get('num_folds', 5))
@@ -221,7 +377,7 @@ def evaluate_fitness(genome: dict, config: dict, device: torch.device) -> Tuple[
             # Enviar folds a threads separados
             print(f"      -> Submitting {num_folds} folds to thread pool (workers={fold_workers})...")
             futures = {
-                executor.submit(train_fold_in_thread, genome, fold_num, config, device): fold_num
+                executor.submit(train_fold_in_thread, genome, fold_num, evolution_config, device): fold_num
                 for fold_num in range(1, num_folds + 1)
             }
 
@@ -233,70 +389,11 @@ def evaluate_fitness(genome: dict, config: dict, device: torch.device) -> Tuple[
                 fold_models[fold_num] = model
                 fold_metrics[fold_num] = metrics
 
-        # Ordenar resultados por fold_num
-        sorted_folds = sorted(fold_scores.keys())
-        fold_scores_list = [fold_scores[f] for f in sorted_folds]
-
-        # Encontrar el mejor modelo
-        best_fold_num = max(fold_scores, key=fold_scores.get)
-        best_fold_score = fold_scores[best_fold_num]
-        best_model = fold_models[best_fold_num]
-
-        # Calcular fitness como promedio de los 5 folds
-        avg_fitness = np.mean(fold_scores_list)
-        std_fitness = np.std(fold_scores_list)
-
-        # Agregar metricas de todos los folds (solo los folds validos)
-        valid_metrics = [m for m in fold_metrics.values() if m is not None]
-
-        if valid_metrics:
-            aggregated_metrics = {
-                'accuracy': np.mean([m['accuracy'] for m in valid_metrics]),
-                'accuracy_std': np.std([m['accuracy'] for m in valid_metrics]),
-                'sensitivity': np.mean([m['sensitivity'] for m in valid_metrics]),
-                'sensitivity_std': np.std([m['sensitivity'] for m in valid_metrics]),
-                'specificity': np.mean([m['specificity'] for m in valid_metrics]),
-                'specificity_std': np.std([m['specificity'] for m in valid_metrics]),
-                'precision': np.mean([m['precision'] for m in valid_metrics]),
-                'precision_std': np.std([m['precision'] for m in valid_metrics]),
-                'f1_score': np.mean([m['f1_score'] for m in valid_metrics]),
-                'f1_score_std': np.std([m['f1_score'] for m in valid_metrics]),
-                'auc': np.mean([m['auc'] for m in valid_metrics]),
-                'auc_std': np.std([m['auc'] for m in valid_metrics]),
-                'fold_metrics': fold_metrics,
-                'n_valid_folds': len(valid_metrics),
-                'fitness_split': 'validation',
-                'fitness_metric': fitness_metric,
-                'selection_metric': selection_metric,
-            }
-        else:
-            aggregated_metrics = {
-                'accuracy': 0.0, 'accuracy_std': 0.0,
-                'sensitivity': 0.0, 'sensitivity_std': 0.0,
-                'specificity': 0.0, 'specificity_std': 0.0,
-                'precision': 0.0, 'precision_std': 0.0,
-                'f1_score': 0.0, 'f1_score_std': 0.0,
-                'auc': 0.0, 'auc_std': 0.0,
-                'fold_metrics': {},
-                'n_valid_folds': 0,
-                'fitness_split': 'validation',
-                'fitness_metric': fitness_metric,
-                'selection_metric': selection_metric,
-            }
-
-        print(f"      + PARALLEL 5-Fold CV Results for {genome['id']}:")
-        print(f"        Fold validation {fitness_metric} scores: {[f'{score:.2f}%' for score in fold_scores_list]}")
-        print(f"        Average validation fitness: {avg_fitness:.2f}% +/- {std_fitness:.2f}%")
-        print(f"        Best fold: Fold {best_fold_num} with {best_fold_score:.2f}% validation {fitness_metric}")
-        print("        --- AGGREGATED METRICS ---")
-        print(f"        Accuracy:     {aggregated_metrics['accuracy']:.2f}% +/- {aggregated_metrics['accuracy_std']:.2f}%")
-        print(f"        Sensitivity:  {aggregated_metrics['sensitivity']:.2f}% +/- {aggregated_metrics['sensitivity_std']:.2f}%")
-        print(f"        Specificity:  {aggregated_metrics['specificity']:.2f}% +/- {aggregated_metrics['specificity_std']:.2f}%")
-        print(f"        Precision:    {aggregated_metrics['precision']:.2f}% +/- {aggregated_metrics['precision_std']:.2f}%")
-        print(f"        F1-Score:     {aggregated_metrics['f1_score']:.2f}% +/- {aggregated_metrics['f1_score_std']:.2f}%")
-        print(f"        AUC:          {aggregated_metrics['auc']:.2f}% +/- {aggregated_metrics['auc_std']:.2f}%")
-
-        return avg_fitness, best_model, aggregated_metrics
+        fold_results = {
+            fold: (fold_scores[fold], fold_models[fold], fold_metrics[fold])
+            for fold in fold_scores
+        }
+        return aggregate_fold_results(genome, config, fold_results)
 
     except Exception as e:
         print(f"      ERROR evaluating genome {genome['id']}: {e}")
@@ -332,12 +429,22 @@ def train_fold_in_thread(genome: dict, fold_num: int, config: dict, device: torc
         Tuple of (fold_num, score, model, metrics)
     """
     try:
+        evolution_config = get_data_phase_config(config, 'evolution')
         fold_train_loader, fold_validation_loader = load_fold_data(
             fold_num,
-            config,
+            evolution_config,
             device,
             eval_split='validation',
         )
+        if int(config.get('fold_parallel_workers', 1)) > 1 and _resolve_cache_mode(config) != 'none':
+            # Cached datasets are shared, but each concurrent training needs
+            # its own DataLoader iterator (especially with persistent workers).
+            fold_train_loader = _build_dataloader(
+                fold_train_loader.dataset, config, device, shuffle=True
+            )
+            fold_validation_loader = _build_dataloader(
+                fold_validation_loader.dataset, config, device, shuffle=False
+            )
 
         try:
             model = EvolvableCNN(genome, config).to(device)
@@ -347,8 +454,7 @@ def train_fold_in_thread(genome: dict, fold_num: int, config: dict, device: torc
                 return fold_num, 0.0, None, None
             raise
 
-        optimizer_class = OPTIMIZERS[genome['optimizer']]
-        optimizer = optimizer_class(model.parameters(), lr=genome['learning_rate'])
+        optimizer = make_optimizer(model, genome, config)
         criterion = nn.CrossEntropyLoss()
 
         fitness_metric = resolve_metric_name(config, 'fitness_metric')
@@ -357,21 +463,24 @@ def train_fold_in_thread(genome: dict, fold_num: int, config: dict, device: torc
         best_selection_metrics = None
         best_epoch = 0
         best_state = None
-        patience_left = int(config.get('epoch_patience', 10))
-        max_epochs = int(config.get('num_epochs', 30))
+        patience_left = int(config_value(config, 'epoch_patience'))
+        max_epochs = int(config_value(config, 'num_epochs'))
         improvement_threshold = resolve_metric_improvement_threshold(config)
-        validation_frequency = max(1, int(config.get('validation_frequency_epochs', 2)))
+        validation_frequency = max(1, int(config_value(config, 'validation_frequency_epochs')))
 
         amp_enabled = bool(config.get('use_amp', True)) and device.type == 'cuda'
         amp_dtype_name = str(config.get('amp_dtype', 'float16')).lower()
         amp_dtype = torch.bfloat16 if amp_dtype_name == 'bfloat16' else torch.float16
         autocast_device_type = 'cuda' if device.type == 'cuda' else 'cpu'
-        scaler = torch.amp.GradScaler("cuda", enabled=amp_enabled)
+        scale_gradients = amp_enabled and amp_dtype == torch.float16
+        scaler = torch.amp.GradScaler("cuda", enabled=scale_gradients)
+        epoch_history = []
 
         for epoch_idx in range(max_epochs):
             model.train()
             batch_count = 0
-            max_batches = min(len(fold_train_loader), int(config.get('early_stopping_patience', len(fold_train_loader))))
+            limit = config.get('max_batches_per_epoch')
+            max_batches = len(fold_train_loader) if limit is None else min(len(fold_train_loader), int(limit))
 
             for data, target in fold_train_loader:
                 data = data.to(device, non_blocking=True)
@@ -380,9 +489,9 @@ def train_fold_in_thread(genome: dict, fold_num: int, config: dict, device: torc
                 optimizer.zero_grad(set_to_none=True)
                 with torch.autocast(device_type=autocast_device_type, dtype=amp_dtype, enabled=amp_enabled):
                     output = model(data)
-                    loss = criterion(output, target)
+                    loss = classification_loss(model, output, target, criterion, config)
 
-                if amp_enabled:
+                if scale_gradients:
                     scaler.scale(loss).backward()
                     scaler.step(optimizer)
                     scaler.update()
@@ -394,40 +503,36 @@ def train_fold_in_thread(genome: dict, fold_num: int, config: dict, device: torc
                 if batch_count >= max_batches:
                     break
 
+            progress_callback = config.get('_fold_progress_callback')
+            if progress_callback is not None and (
+                epoch_idx == 0 or (epoch_idx + 1) % 5 == 0 or epoch_idx + 1 == max_epochs
+            ):
+                progress_callback(epoch_idx + 1, max_epochs)
+
             should_validate = ((epoch_idx + 1) % validation_frequency == 0) or (epoch_idx + 1 == max_epochs)
             if not should_validate:
                 continue
 
-            model.eval()
-            validation_targets = []
-            validation_preds = []
-            validation_probs = []
-            with torch.no_grad():
-                for data, target in fold_validation_loader:
-                    data = data.to(device, non_blocking=True)
-                    target = target.to(device, non_blocking=True)
-                    with torch.autocast(device_type=autocast_device_type, dtype=amp_dtype, enabled=amp_enabled):
-                        output = model(data)
-                    probs = F.softmax(output, dim=1)
-                    _, predicted = torch.max(output, 1)
-
-                    validation_targets.extend(target.cpu().numpy().tolist())
-                    validation_preds.extend(predicted.cpu().numpy().tolist())
-                    validation_probs.extend(probs[:, 1].cpu().numpy().tolist())
-
-            validation_metrics = compute_classification_metrics(
-                validation_targets,
-                validation_preds,
-                validation_probs,
+            validation_metrics = _evaluate_model_on_loader(
+                model,
+                fold_validation_loader,
+                device,
+                autocast_device_type,
+                amp_dtype,
+                amp_enabled,
             )
             current_selection_score = metric_value(validation_metrics, selection_metric)
+            epoch_history.append({'epoch': epoch_idx + 1, **validation_metrics})
+            epoch_callback = config.get('_fold_epoch_callback')
+            if epoch_callback is not None:
+                epoch_callback(dict(epoch_history[-1]))
 
             if current_selection_score > (best_selection_score + improvement_threshold):
                 best_selection_score = current_selection_score
                 best_selection_metrics = validation_metrics
                 best_epoch = epoch_idx + 1
                 best_state = {k: v.detach().clone() for k, v in model.state_dict().items()}
-                patience_left = int(config.get('epoch_patience', 10))
+                patience_left = int(config_value(config, 'epoch_patience'))
             else:
                 patience_left -= 1
                 if patience_left <= 0:
@@ -436,35 +541,29 @@ def train_fold_in_thread(genome: dict, fold_num: int, config: dict, device: torc
         if best_state is not None:
             model.load_state_dict(best_state)
 
-        model.eval()
-        all_targets = []
-        all_preds = []
-        all_probs = []
-
-        with torch.no_grad():
-            for data, target in fold_validation_loader:
-                data = data.to(device, non_blocking=True)
-                target = target.to(device, non_blocking=True)
-                with torch.autocast(device_type=autocast_device_type, dtype=amp_dtype, enabled=amp_enabled):
-                    output = model(data)
-                probs = F.softmax(output, dim=1)
-                _, predicted = torch.max(output, 1)
-
-                all_targets.extend(target.cpu().numpy().tolist())
-                all_preds.extend(predicted.cpu().numpy().tolist())
-                all_probs.extend(probs[:, 1].cpu().numpy().tolist())
-
-        metrics = compute_classification_metrics(all_targets, all_preds, all_probs)
+        metrics = _evaluate_model_on_loader(
+            model,
+            fold_validation_loader,
+            device,
+            autocast_device_type,
+            amp_dtype,
+            amp_enabled,
+        )
         if best_selection_metrics is None:
             best_selection_metrics = metrics
             best_selection_score = metric_value(best_selection_metrics, selection_metric)
 
         metrics.update({
             'evaluation_split': 'validation',
+            'selection_split': 'validation',
             'fitness_metric': fitness_metric,
             'selection_metric': selection_metric,
+            'checkpoint_metric': str(config.get('checkpoint_metric', config.get('fitness_metric', 'f1_score'))),
             'best_selection_score': float(best_selection_score),
             'best_epoch': best_epoch,
+            'epochs_completed': epoch_idx + 1,
+            'epoch_history': epoch_history,
+            'parameter_count': sum(parameter.numel() for parameter in model.parameters()),
             'best_selection_metrics': best_selection_metrics,
         })
 
@@ -480,6 +579,8 @@ def train_fold_in_thread(genome: dict, fold_num: int, config: dict, device: torc
         return fold_num, metric_value(metrics, fitness_metric), model, metrics
 
     except Exception as e:
+        if isinstance(e, torch.cuda.OutOfMemoryError):
+            raise
         print(f"      ERROR in Fold {fold_num}: {e}")
         import traceback
         traceback.print_exc()
@@ -535,6 +636,46 @@ def _build_dataloader(
     return DataLoader(dataset, shuffle=shuffle, **loader_kwargs)
 
 
+def load_fold_loaders(fold_number: int, config: dict, device: torch.device) -> FoldLoaders:
+    """
+    Carga loaders separados de train, validation y test para un fold.
+
+    Args:
+        fold_number: Numero de fold (1-5)
+        config: Configuration dictionary
+        device: PyTorch device (CPU or CUDA)
+    Returns:
+        Named train, validation, and test loaders.  This explicit contract
+        prevents a caller from accidentally merging validation and test.
+    """
+    cache_mode = _resolve_cache_mode(config)
+    cache_enabled = cache_mode in {'ram', 'memmap'}
+
+    if not cache_enabled:
+        train, validation, test = _load_fold_data_uncached(
+            fold_number, config, device, cache_mode, 'all'
+        )
+        return FoldLoaders(train=train, validation=validation, test=test)
+
+    cache_key = _build_fold_cache_key(fold_number, config, device, cache_mode, 'all')
+    with _FOLD_DATALOADER_CACHE_LOCK:
+        cached = _FOLD_DATALOADER_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+
+    train, validation, test = _load_fold_data_uncached(
+        fold_number, config, device, cache_mode, 'all'
+    )
+    loaded = FoldLoaders(train=train, validation=validation, test=test)
+    with _FOLD_DATALOADER_CACHE_LOCK:
+        # Avoid duplicate work if another thread loaded the same key in parallel.
+        existing = _FOLD_DATALOADER_CACHE.get(cache_key)
+        if existing is not None:
+            return existing
+        _FOLD_DATALOADER_CACHE[cache_key] = loaded
+        return loaded
+
+
 def load_fold_data(
     fold_number: int,
     config: dict,
@@ -542,26 +683,17 @@ def load_fold_data(
     eval_split: str = 'validation',
 ) -> Tuple[DataLoader, ...]:
     """
-    Carga los datos de un fold especifico para el entrenamiento.
+    Compatibility wrapper returning the requested explicit fold split.
 
-    Args:
-        fold_number: Numero de fold (1-5)
-        config: Configuration dictionary
-        device: PyTorch device (CPU or CUDA)
-        eval_split: Which evaluation split to load. Use "validation" for
-            evolutionary fitness, "test" for final reporting,
-            "validation_and_test" only for explicit legacy compatibility, or
-            "all" to return train, validation, and test loaders separately.
-
-    Returns:
-        Tuple de DataLoaders. Returns (train, eval) for split-specific modes
-        or (train, validation, test) for eval_split="all".
+    New code should call load_fold_loaders() so the test split remains explicit.
     """
     eval_split = _normalize_eval_split(eval_split)
-    cache_mode = _resolve_cache_mode(config)
-    cache_enabled = cache_mode in {'ram', 'memmap'}
+    if eval_split == 'all':
+        loaders = load_fold_loaders(fold_number, config, device)
+        return loaders.train, loaders.validation, loaders.test
 
-    if not cache_enabled:
+    cache_mode = _resolve_cache_mode(config)
+    if cache_mode == 'none':
         return _load_fold_data_uncached(fold_number, config, device, cache_mode, eval_split)
 
     cache_key = _build_fold_cache_key(fold_number, config, device, cache_mode, eval_split)
@@ -572,7 +704,6 @@ def load_fold_data(
 
     loaded = _load_fold_data_uncached(fold_number, config, device, cache_mode, eval_split)
     with _FOLD_DATALOADER_CACHE_LOCK:
-        # Avoid duplicate work if another thread loaded the same key in parallel.
         existing = _FOLD_DATALOADER_CACHE.get(cache_key)
         if existing is not None:
             return existing

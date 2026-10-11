@@ -1,0 +1,29 @@
+Individual 1/2 | ID=g1 | status=trained | fitness=90.00% | time=0.500s | params=1200 | best_gen=90.00% | global_best=90.00%
+Individual 2/2 | ID=g2 | status=trained | fitness=89.00% | time=1.250s | params=900 | best_gen=90.00% | global_best=90.00%
+====================================================================================================
+GENERATION 0 - DETAILED METRICS SUMMARY
+====================================================================================================
+ID              Arch                     Rank   Crowd    Time(s)   Params       Acc        Sen        Spe        Pre        F1         AUC       
+----------------------------------------------------------------------------------------------------
+g1              toy                      0      inf      0.500     1200          10.00%    20.00%    30.00%    40.00%    90.00%    60.00%
+g2              toy                      0      inf      1.250     900           10.00%    20.00%    30.00%    40.00%    89.00%    60.00%
+----------------------------------------------------------------------------------------------------
+GENERATION AVG                   10.00%    20.00%    30.00%    40.00%    89.50%    60.00%
+----------------------------------------------------------------------------------------------------
+GENERATION 0 STATISTICS:
+   Maximum fitness: 90.00%
+   Average fitness: 89.50%
+   Minimum fitness: 89.00%
+   Standard deviation: 0.50%
+   Best individual: g1 with 90.00%
+   Global best individual: g1 with 90.00%
+   Selection strategy: pareto
+   Best Individual Metrics (ID: g1):
+      Accuracy:     10.00% +/- 0.00%
+      Sensitivity:  20.00% +/- 0.00%
+      Specificity:  30.00% +/- 0.00%
+      Precision:    40.00% +/- 0.00%
+      F1-Score:     90.00% +/- 0.00%
+      AUC:          60.00% +/- 0.00%
+      Cost:         time=0.500s, params=1200, pareto_rank=0, crowding=inf
+====================================================================================================

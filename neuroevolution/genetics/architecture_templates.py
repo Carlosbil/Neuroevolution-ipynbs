@@ -1,4 +1,4 @@
-"""Known architecture templates adapted to the searchable Conv1D genome."""
+"""Complete reference classifiers and legacy reduced Conv1D templates."""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ from typing import Dict, Iterable, List, Optional
 
 from neuroevolution.genetics.innovation import append_structural_event, build_innovation_genes
 from neuroevolution.models.genome_validator import is_genome_valid, validate_and_fix_genome
+from neuroevolution.config import REFERENCE_ARCHITECTURE_IDS, optimizer_learning_rates, config_value
 
 
 RANDOM_TEMPLATE_ORIGIN = "random"
@@ -38,6 +39,7 @@ class ArchitectureTemplate:
     residual_projection: str = "auto"
     inception_reduction_ratio: float = 0.5
     inception_pool_branch: bool = True
+    model_kind: str = 'evolvable'
 
 
 _TEMPLATES: Dict[str, ArchitectureTemplate] = {
@@ -150,7 +152,15 @@ _TEMPLATES: Dict[str, ArchitectureTemplate] = {
 }
 
 
-DEFAULT_TEMPLATE_IDS = tuple(_TEMPLATES.keys())
+for _name in REFERENCE_ARCHITECTURE_IDS:
+    _family = next((family for family in ('wide_resnet', 'resnext', 'resnet', 'vgg', 'densenet', 'mobilenet', 'efficientnet', 'squeezenet') if _name.startswith(family)), _name)
+    _TEMPLATES[_name] = ArchitectureTemplate(
+        template_id=_name, template_family=_family, conv_topology='reference',
+        num_conv_layers=0, filters=(), kernel_sizes=(), num_fc_layers=0, fc_nodes=(),
+        model_kind='reference',
+    )
+
+DEFAULT_TEMPLATE_IDS = REFERENCE_ARCHITECTURE_IDS
 
 
 def get_template_registry() -> Dict[str, ArchitectureTemplate]:
@@ -169,7 +179,8 @@ def get_template(template_id: str) -> ArchitectureTemplate:
 def get_configured_templates(config: dict) -> List[ArchitectureTemplate]:
     """Returns configured templates in configured order after validation."""
     template_ids = config.get("architecture_template_ids", DEFAULT_TEMPLATE_IDS)
-    return [get_template(template_id) for template_id in template_ids]
+    templates = [get_template(template_id) for template_id in template_ids]
+    return [template for template in templates if template.model_kind != 'reference' or str(config.get('input_modality', 'audio')).lower() in {'image', 'spectrogram'}]
 
 
 def _cap_from_config(config: dict, current_key: str, maximum_key: str) -> int:
@@ -225,6 +236,16 @@ def _template_fc_fields(template: ArchitectureTemplate, config: dict) -> tuple:
 
 
 def _template_base_genome(template: ArchitectureTemplate, config: dict) -> dict:
+    if template.model_kind == 'reference':
+        return {
+            'model_kind': 'reference', 'reference_architecture_id': template.template_id,
+            'num_conv_layers': 0, 'num_fc_layers': 0, 'filters': [], 'kernel_sizes': [],
+            'fc_nodes': [], 'activations': [], 'normalization_type': 'native',
+            'conv_topology': 'reference', 'dropout_rate': config_value(config, 'reference_dropout_rate'),
+            'optimizer': config_value(config, 'reference_seed_optimizer'),
+            'learning_rate': config_value(config, 'reference_seed_learning_rate'),
+            'id': str(uuid.uuid4())[:8], 'fitness': 0.0, 'structural_history': [],
+        }
     num_conv_layers, filters, kernel_sizes = _template_conv_fields(template, config)
     num_fc_layers, fc_nodes = _template_fc_fields(template, config)
     activations = _repeat_to_length(
@@ -232,8 +253,8 @@ def _template_base_genome(template: ArchitectureTemplate, config: dict) -> dict:
         max(num_conv_layers, num_fc_layers),
     )
     learning_rate = _choose_supported(
-        template.learning_rate,
-        config.get("learning_rate_options", [template.learning_rate]),
+        config_value(config, 'template_seed_learning_rate'),
+        optimizer_learning_rates(config, config_value(config, 'template_seed_optimizer')),
     )
     residual_enabled = template.conv_topology == "residual"
     inception_enabled = template.conv_topology == "inception"
@@ -247,7 +268,7 @@ def _template_base_genome(template: ArchitectureTemplate, config: dict) -> dict:
         "activations": activations,
         "dropout_rate": float(template.dropout_rate),
         "learning_rate": learning_rate,
-        "optimizer": template.optimizer,
+        "optimizer": config_value(config, 'template_seed_optimizer'),
         "normalization_type": template.normalization_type,
         "conv_topology": template.conv_topology,
         "residual_enabled": residual_enabled,
@@ -335,9 +356,17 @@ def choose_template(config: dict) -> ArchitectureTemplate:
 def apply_template_module_to_genome(genome: dict, config: dict, template_id: Optional[str] = None) -> dict:
     """Applies a bounded template-inspired topology and Conv1D segment mutation."""
     template = get_template(template_id) if template_id else choose_template(config)
+    if template.model_kind == 'reference' or genome.get('model_kind') == 'reference':
+        mutated = create_template_genome(template.template_id, config, MUTATION_TEMPLATE_ORIGIN)
+        mutated['optimizer'] = genome['optimizer']
+        rates = optimizer_learning_rates(config, mutated['optimizer'])
+        mutated['learning_rate'] = genome['learning_rate'] if genome['learning_rate'] in rates else random.choice(rates)
+        mutated['structural_history'] = copy.deepcopy(genome.get('structural_history', [])) + mutated['structural_history']
+        mutated['innovation_genes'] = build_innovation_genes(mutated)
+        return mutated
     mutated = copy.deepcopy(genome)
-    for cached_key in ("skip_next_evaluation", "cached_from_generation", "metrics", "evaluation_status"):
-        mutated.pop(cached_key, None)
+    from .genome import invalidate_evaluation
+    invalidate_evaluation(mutated)
 
     num_conv_layers = int(mutated.get("num_conv_layers", template.num_conv_layers))
     num_conv_layers = _clamp(

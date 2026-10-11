@@ -5,6 +5,7 @@ Genome validation utilities for architecture safety checks.
 import math
 import numpy as np
 import random
+from ..config import config_value
 
 
 DEFAULT_RESIDUAL_BLOCK_SIZE = 2
@@ -267,14 +268,90 @@ def calculate_pooling_operation_count(
     return num_conv_layers
 
 
+def architecture_spatial_limit(config: dict) -> int:
+    """Smallest spatial axis constraining a spectrogram CNN's pool depth."""
+    time_frames = int(config['sequence_length'])
+    if str(config.get('input_modality', 'audio')).lower() in {'spectrogram', 'image'}:
+        return min(time_frames, int(config['num_frequency_bins']))
+    return time_frames
+
+
+def _estimate_2d_parameter_count(fixed: dict, config: dict) -> int:
+    """Count square Conv2D kernels and the fixed adaptive pooled classifier."""
+    count = int(fixed['num_conv_layers'])
+    filters = fixed['filters'][:count]
+    kernels = fixed['kernel_sizes'][:count]
+    in_channels = int(config['num_channels'])
+    conv_params = 0
+    block_start_channels = in_channels
+    residual = bool(fixed.get('residual_enabled', False))
+    inception = bool(fixed.get('inception_enabled', False))
+    block_size = int(fixed.get('residual_block_size', DEFAULT_RESIDUAL_BLOCK_SIZE))
+    pool_branch = bool(fixed.get('inception_pool_branch', DEFAULT_INCEPTION_POOL_BRANCH))
+    min_branch_channels = int(config.get('inception_min_branch_channels', DEFAULT_INCEPTION_MIN_BRANCH_CHANNELS))
+
+    def unit_params(inputs, outputs, kernel):
+        return int(inputs) * int(outputs) * int(kernel) ** 2 + 3 * int(outputs)
+
+    if inception:
+        for index, out_channels in enumerate(filters):
+            wide = _normalize_odd_kernel(kernels[index], minimum=5)
+            branches = calculate_inception_branch_channels(
+                out_channels, pool_branch=pool_branch, min_branch_channels=min_branch_channels,
+            )
+            reduced = calculate_inception_reduction_channels(
+                in_channels, fixed.get('inception_reduction_ratio', DEFAULT_INCEPTION_REDUCTION_RATIO),
+                min_branch_channels=min_branch_channels,
+            )
+            conv_params += unit_params(in_channels, branches['pointwise'], 1)
+            conv_params += unit_params(in_channels, reduced, 1)
+            conv_params += unit_params(reduced, branches['medium'], 3)
+            conv_params += unit_params(in_channels, reduced, 1)
+            conv_params += unit_params(reduced, branches['wide'], wide)
+            if pool_branch:
+                conv_params += unit_params(in_channels, branches['pool'], 1)
+            in_channels = int(out_channels)
+    else:
+        for index, out_channels in enumerate(filters):
+            kernel = _normalize_odd_kernel(kernels[index], minimum=3)
+            conv_params += unit_params(in_channels, out_channels, kernel)
+            in_channels = int(out_channels)
+            is_block_end = residual and (
+                (index + 1) % block_size == 0 or index == count - 1
+            )
+            if is_block_end:
+                if block_start_channels != in_channels and index + 1 - (index // block_size) * block_size > 1:
+                    conv_params += block_start_channels * in_channels + in_channels
+                block_start_channels = in_channels
+
+    pool_shape = config_value(config, 'pre_fc_pool_shape')
+    if pool_shape is None:
+        pooling_count = calculate_pooling_operation_count(count, residual, block_size, inception)
+        pool_shape = (int(config['num_frequency_bins']) // 2 ** pooling_count,
+                      int(config['sequence_length']) // 2 ** pooling_count)
+    fc_input = in_channels * int(pool_shape[0]) * int(pool_shape[1])
+    fc_params = 0
+    for nodes in fixed.get('fc_nodes', [])[:int(fixed.get('num_fc_layers', 0))]:
+        nodes = int(nodes)
+        fc_params += fc_input * nodes + nodes + 2 * nodes
+        fc_input = nodes
+    fc_params += fc_input * int(config['num_classes']) + int(config['num_classes'])
+    return int(conv_params + fc_params)
+
+
 def estimate_genome_parameter_count(genome: dict, config: dict) -> int:
     """
     Deterministically estimates trainable parameters without instantiating a model.
     """
+    if genome.get('model_kind') == 'reference':
+        from .reference_architectures import reference_parameter_count
+        return reference_parameter_count(genome, config)
     fixed = normalize_conv_topology_fields(
         {k: list(v) if isinstance(v, list) else v for k, v in genome.items()},
         config,
     )
+    if str(config.get('input_modality', 'audio')).lower() in {'spectrogram', 'image'}:
+        return _estimate_2d_parameter_count(fixed, config)
     num_conv_layers = int(fixed['num_conv_layers'])
     filters = list(fixed.get('filters', []))[:num_conv_layers]
     kernel_sizes = list(fixed.get('kernel_sizes', []))[:num_conv_layers]
@@ -350,6 +427,8 @@ def estimate_genome_parameter_count(genome: dict, config: dict) -> int:
     temporal_length = int(config['sequence_length'])
     for _ in range(pool_count):
         temporal_length = max(1, temporal_length // 2)
+    if config.get('pre_fc_pool_length') is not None:
+        temporal_length = int(config['pre_fc_pool_length'])
 
     fc_input_size = max(1, temporal_length) * max(1, in_channels)
     fc_params = 0
@@ -375,6 +454,13 @@ def is_genome_valid(genome: dict, config: dict) -> bool:
     Returns:
         True if genome is valid, False otherwise
     """
+    if genome.get('model_kind') == 'reference':
+        from .reference_architectures import validate_reference_genome
+        try:
+            validate_reference_genome(genome, config)
+            return True
+        except ValueError:
+            return False
     fixed = normalize_conv_topology_fields(
         {k: list(v) if isinstance(v, list) else v for k, v in genome.items()},
         config,
@@ -384,7 +470,7 @@ def is_genome_valid(genome: dict, config: dict) -> bool:
     # Sequential mode pools after every convolution; residual mode pools once
     # per residual block.
     num_conv_layers = fixed['num_conv_layers']
-    sequence_length = config['sequence_length']
+    sequence_length = architecture_spatial_limit(config)
     residual_enabled = fixed.get('residual_enabled', False)
     residual_block_size = fixed.get('residual_block_size', DEFAULT_RESIDUAL_BLOCK_SIZE)
     inception_enabled = fixed.get('inception_enabled', False)
@@ -480,6 +566,9 @@ def validate_and_fix_genome(genome: dict, config: dict) -> dict:
     Returns:
         Fixed genome with correct list lengths
     """
+    if genome.get('model_kind') == 'reference':
+        from .reference_architectures import validate_reference_genome
+        return validate_reference_genome(genome, config)
     # Fix filters and kernel_sizes to match num_conv_layers
     num_conv = genome['num_conv_layers']
     
@@ -517,6 +606,9 @@ def validate_and_fix_genome(genome: dict, config: dict) -> dict:
 
 def stable_genome_signature(genome: dict, config: dict = None) -> tuple:
     """Returns a stable architecture signature suitable for fitness caches."""
+    if genome.get('model_kind') == 'reference':
+        return ('reference', genome['reference_architecture_id'], genome['optimizer'],
+                genome['learning_rate'], config.get('reference_dropout_rate') if config else None)
     fixed = {k: list(v) if isinstance(v, list) else v for k, v in genome.items()}
     if config is not None:
         fixed = validate_and_fix_genome(fixed, config)

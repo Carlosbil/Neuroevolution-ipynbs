@@ -23,7 +23,7 @@ from .logger import setup_notebook_logging, verify_dependencies, install_package
 from .data.loader import load_dataset
 
 # Model components
-from .models.evolvable_cnn import EvolvableCNN
+from .models.evolvable_cnn import EvolvableCNN, EvolvableCNN1D, EvolvableCNN2D
 from .models.architecture_formatting import format_genome_architecture
 from .models.genome_validator import (
     calculate_pooling_operation_count,
@@ -53,12 +53,24 @@ from .genetics.innovation import (
 
 # Evolution engine
 from .evolution.engine import HybridNeuroevolution
-from .evolution.fitness import evaluate_fitness, train_fold_in_thread, load_fold_data
+from .evolution.fitness import (
+    FoldLoaders,
+    checkpoint_selection_score,
+    evaluate_fitness,
+    load_fold_data,
+    load_fold_loaders,
+    train_fold_in_thread,
+)
 
 # Evaluation and artifacts
 from .evaluation.metrics import calculate_metrics, aggregate_fold_metrics
 from .evaluation.artifacts import ArtifactManager
 from .evaluation.cross_validation import evaluate_5fold_cross_validation, evaluate_single_fold
+from .evaluation.reporting import (
+    build_held_out_results_rows,
+    format_held_out_results_markdown,
+    plot_fold_confusion_matrices,
+)
 
 # Visualization
 from .visualization.plots import (
@@ -98,6 +110,8 @@ __all__ = [
     "load_dataset",
     # Models
     "EvolvableCNN",
+    "EvolvableCNN1D",
+    "EvolvableCNN2D",
     "format_genome_architecture",
     "is_genome_valid",
     "normalize_residual_fields",
@@ -124,15 +138,21 @@ __all__ = [
     "stable_genome_signature",
     # Evolution
     "HybridNeuroevolution",
+    "FoldLoaders",
+    "checkpoint_selection_score",
     "evaluate_fitness",
     "train_fold_in_thread",
     "load_fold_data",
+    "load_fold_loaders",
     # Evaluation
     "calculate_metrics",
     "aggregate_fold_metrics",
     "ArtifactManager",
     "evaluate_single_fold",
     "evaluate_5fold_cross_validation",
+    "build_held_out_results_rows",
+    "format_held_out_results_markdown",
+    "plot_fold_confusion_matrices",
     # Visualization
     "plot_fitness_evolution",
     "show_evolution_statistics",

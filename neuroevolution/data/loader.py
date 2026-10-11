@@ -1,5 +1,5 @@
 """
-Dataset loading and verification for 5-fold cross-validation.
+Dataset loading and verification for the 5-fold train/validation/test protocol.
 """
 
 import os
@@ -15,7 +15,7 @@ def load_dataset(config: dict) -> None:
     During evolution, each individual will load all folds automatically.
     
     Args:
-        config: Configuration dictionary (updated in-place with sequence_length)
+        config: Authoritative configuration dictionary, never modified
     
     Raises:
         FileNotFoundError: If data directory or files are missing
@@ -33,50 +33,22 @@ def load_dataset(config: dict) -> None:
     
     print(f"   Looking for: {os.path.abspath(fold_files_directory)}")
     
-    # If directory not found, try alternative locations
-    if not os.path.exists(fold_files_directory):
-        possible_paths = [
-            os.path.join('..', 'data', 'sets', 'folds_5', config['fold_files_subdirectory']),
-            os.path.join('data', 'sets', 'folds_5', config['fold_files_subdirectory']),
-            os.path.join('.', 'data', 'sets', 'folds_5', config['fold_files_subdirectory']),
-        ]
-        
-        print(f"\nSearching for data in alternative locations:")
-        for path in possible_paths:
-            abs_path = os.path.abspath(path)
-            exists = os.path.exists(path)
-            print(f"   {'✓' if exists else '✗'} {abs_path}")
-            if exists:
-                fold_files_directory = path
-                print(f"\n✓ Found data at: {os.path.abspath(fold_files_directory)}")
-                break
-        else:
-            raise FileNotFoundError(
-                f"\n❌ Could not find data directory!\n"
-                f"   Tried paths:\n" + 
-                "\n".join([f"      - {os.path.abspath(p)}" for p in possible_paths]) +
-                f"\n\n   Please check:\n"
-                f"      1. CONFIG['data_path'] is correct\n"
-                f"      2. The data files exist\n"
-                f"      3. The fold_id '{config['fold_id']}' is correct\n"
-            )
-    else:
-        print(f"   ✓ Directory found: {os.path.abspath(fold_files_directory)}")
-    
+    if not os.path.isdir(fold_files_directory):
+        raise FileNotFoundError(f"Configured data directory is missing: {fold_files_directory}; update data_path in config.py")
+    print(f"   Directory found: {os.path.abspath(fold_files_directory)}")
+
     dataset_id = config['dataset_id']
     
     # Check that all 5 folds exist
     print(f"\nChecking for all 5 folds...")
     all_folds_ok = True
     
-    for fold_num in range(1, 6):
+    for fold_num in range(1, int(config['num_folds']) + 1):
         required_files = [
             f'X_train_{dataset_id}_fold_{fold_num}.npy',
             f'y_train_{dataset_id}_fold_{fold_num}.npy',
             f'X_val_{dataset_id}_fold_{fold_num}.npy',
             f'y_val_{dataset_id}_fold_{fold_num}.npy',
-            f'X_test_{dataset_id}_fold_{fold_num}.npy',
-            f'y_test_{dataset_id}_fold_{fold_num}.npy',
         ]
         
         fold_ok = True
@@ -106,12 +78,11 @@ def load_dataset(config: dict) -> None:
     
     print(f"   Train samples: {x_train.shape}")
     
-    # Update sequence length from actual data
-    if len(x_train.shape) == 2:  # (samples, sequence_length)
-        config['sequence_length'] = x_train.shape[1]
-    elif len(x_train.shape) == 3:  # Already (samples, channels, sequence_length)
-        config['sequence_length'] = x_train.shape[2]
-    
+    # Configuration is authoritative: reject mismatches rather than rewriting it.
+    detected_length = x_train.shape[-1]
+    if int(config['sequence_length']) != int(detected_length):
+        raise ValueError(f"sequence_length={config['sequence_length']} differs from arrays ({detected_length}); update config.py")
+
     print(f"   Sequence length detected: {config['sequence_length']}")
     print(f"\n✓ Dataset verification complete!")
     print(f"   During evolution, each individual will train on all 5 folds.")
@@ -137,18 +108,6 @@ def load_fold_data(config: dict, fold_num: int) -> Tuple[np.ndarray, np.ndarray,
         config['data_path'], 
         config['fold_files_subdirectory']
     )
-    
-    # Try alternative paths if not found
-    if not os.path.exists(fold_files_directory):
-        possible_paths = [
-            os.path.join('..', 'data', 'sets', 'folds_5', config['fold_files_subdirectory']),
-            os.path.join('data', 'sets', 'folds_5', config['fold_files_subdirectory']),
-            os.path.join('.', 'data', 'sets', 'folds_5', config['fold_files_subdirectory']),
-        ]
-        for path in possible_paths:
-            if os.path.exists(path):
-                fold_files_directory = path
-                break
     
     dataset_id = config['dataset_id']
     

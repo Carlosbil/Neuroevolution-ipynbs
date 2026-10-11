@@ -1,0 +1,25 @@
+/* A small, directed camera move with an anchored explanation, not a page zoom. */
+.guide-frame{position:relative;min-width:0}
+.guide-frame.guided-active{padding-top:var(--guide-clearance,106px);isolation:isolate;overflow:hidden}
+.guide-frame>.network-scroll{margin-top:0}
+.guide-frame>#population-grid{margin-top:12px}
+.guide-frame>.offspring-diagram{margin-top:0}
+.guide-overlay{position:absolute;inset:0;pointer-events:none;z-index:2;color:var(--orange)}
+.guide-caption{position:absolute;top:9px;left:12px;max-width:min(365px,calc(100% - 24px));padding:11px 15px;border:1px solid #725842;background:#201d25;border-radius:10px;line-height:1.45}
+.guide-caption strong{display:block;color:#ffd6aa;font-size:.86rem;font-weight:600}
+.guide-caption span{display:block;color:#e6c7ae;font-size:.77rem;line-height:1.5;margin-top:5px}
+.guide-leader{position:absolute;inset:0;width:100%;height:100%;overflow:visible;fill:none;pointer-events:none}
+.guide-arrow{stroke:var(--orange);stroke-width:1.8;stroke-linecap:round;vector-effect:non-scaling-stroke}
+.guide-ring{fill:none;stroke:var(--orange);stroke-width:1.2;stroke-dasharray:5 4;vector-effect:non-scaling-stroke}
+.guide-zoom-target{transform-box:fill-box;transform-origin:center}
+.guide-toggle{color:var(--muted)}
+.guide-toggle[aria-pressed=true]{border-color:#725842;color:#ffd6aa;background:#201d25}
+.architecture-timeline .guide-toggle{white-space:nowrap}
+@media(max-width:680px){
+  .guide-frame.guided-active{padding-top:var(--guide-clearance,113px)}
+  .guide-caption{left:5px;max-width:calc(100% - 10px);padding:10px 12px}
+  .guide-caption strong{font-size:.82rem}
+  .guide-caption span{font-size:.75rem}
+  .architecture-timeline .guide-toggle{margin-left:auto}
+}
+@media(prefers-reduced-motion:reduce){.guide-zoom-target{scale:1!important}.guide-ring{stroke-dasharray:none}}

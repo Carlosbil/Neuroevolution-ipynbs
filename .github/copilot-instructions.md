@@ -11,10 +11,10 @@ This is an academic research project focused on finding robust architectures to 
 Install the following packages to run the notebooks:
 
 ```bash
-pip install torch==2.11.0 torchvision==0.26.0 numpy>=1.21.0 matplotlib>=3.5.0 seaborn>=0.11.0 tqdm>=4.64.0 jupyter>=1.0.0 ipywidgets>=8.0.0 scikit-learn
+python -m pip install --upgrade "torch==2.11.0" "torchvision==0.26.0" "numpy>=1.21.0" "matplotlib>=3.5.0" "seaborn>=0.11.0" "tqdm>=4.64.0" "jupyter>=1.0.0" "ipywidgets>=8.0.0" scikit-learn "packaging>=23.0"
 ```
 
-The notebooks will auto-install missing packages on first run.
+The notebooks verify dependencies without installing packages. Repair incompatible native libraries from a terminal using the notebook's Python environment, with all kernels stopped, then start a new kernel.
 
 ## Notebook Structure
 

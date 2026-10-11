@@ -1,0 +1,27 @@
+{
+  "generation": 0,
+  "population": [],
+  "best_individual": null,
+  "fitness_history": [],
+  "generation_stats": [],
+  "generations_without_improvement": 0,
+  "best_fitness_overall": -Infinity,
+  "best_fitness_for_early_stopping": -Infinity,
+  "best_checkpoint_path": "G:\\Neuroevolution-ipynbs\\.pytest-codex-audit-20260921\\test_global_checkpoint_records0\\best_model_gen0_idabc123_fitness42.00.pth",
+  "selection_strategy": "pareto",
+  "pareto_objectives": [
+    {
+      "name": "fitness",
+      "direction": "maximize"
+    },
+    {
+      "name": "evaluation_time_seconds",
+      "direction": "minimize"
+    },
+    {
+      "name": "parameter_count",
+      "direction": "minimize"
+    }
+  ],
+  "pareto_fitness_epsilon": 0.0
+}

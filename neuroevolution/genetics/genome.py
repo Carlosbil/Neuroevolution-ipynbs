@@ -4,13 +4,24 @@ Genome creation functions for neuroevolution.
 
 import random
 import uuid
-from neuroevolution.config import ACTIVATION_FUNCTIONS, OPTIMIZERS
+from neuroevolution.config import ACTIVATION_FUNCTIONS, OPTIMIZERS, optimizer_learning_rates, config_value
 from neuroevolution.models.genome_validator import (
+    architecture_spatial_limit,
     calculate_max_safe_conv_layers,
     is_genome_valid,
     validate_and_fix_genome,
 )
 from neuroevolution.genetics.innovation import build_innovation_genes
+
+
+def invalidate_evaluation(genome: dict) -> dict:
+    """A child never inherits its parent's evaluation or cost measurements."""
+    for key in ('metrics', 'evaluation_status', 'evaluation_time_seconds', 'parameter_count',
+                'pareto_rank', 'crowding_distance', 'selection_objectives',
+                'skip_next_evaluation', 'cached_from_generation', 'species_id', 'adjusted_fitness'):
+        genome.pop(key, None)
+    genome['fitness'] = 0.0
+    return genome
 
 
 def _sample_conv_topology(config: dict) -> str:
@@ -43,7 +54,7 @@ def create_random_genome(config: dict) -> dict:
     Returns:
         Valid genome dictionary
     """
-    max_attempts = 100
+    max_attempts = int(config_value(config, 'random_genome_max_attempts'))
     attempt = 0
 
     # Incremental caps (if not present, use full limits)
@@ -66,8 +77,8 @@ def create_random_genome(config: dict) -> dict:
         # Calculate maximum safe conv layers based on sequence length and
         # selected topology. Residual mode pools per block, so deeper stacks can
         # still be safe.
-        sequence_length = config['sequence_length']
-        min_required_length = 4
+        sequence_length = architecture_spatial_limit(config)
+        min_required_length = config_value(config, 'minimum_feature_map_size')
         max_safe_conv_layers = calculate_max_safe_conv_layers(
             sequence_length,
             min_required_length=min_required_length,
@@ -101,13 +112,16 @@ def create_random_genome(config: dict) -> dict:
             fc_nodes.append(layer_nodes)
 
         # Activation functions for each layer
-        activations = [random.choice(list(ACTIVATION_FUNCTIONS.keys())) for _ in range(max(num_conv_layers, num_fc_layers))]
+        activations = [random.choice(config.get('activation_options', list(ACTIVATION_FUNCTIONS))) for _ in range(max(num_conv_layers, num_fc_layers))]
 
         # Other parameters (using configured ranges and options)
         dropout_rate = random.uniform(config['min_dropout'], config['max_dropout'])
-        learning_rate = random.choice(config['learning_rate_options'])
-        optimizer = random.choice(list(OPTIMIZERS.keys()))
-        normalization_type = 'batch'
+        optimizer = random.choice(config.get('optimizer_options', list(OPTIMIZERS)))
+        learning_rate = random.choice(optimizer_learning_rates(config, optimizer))
+        normalization_type = random.choices(['batch', 'layer'], weights=[
+            config_value(config, 'normalization_batch_weight'),
+            config_value(config, 'normalization_layer_weight'),
+        ])[0]
 
         genome = {
             'num_conv_layers': num_conv_layers,
@@ -141,15 +155,15 @@ def create_random_genome(config: dict) -> dict:
 
     print(f"⚠️ Warning: Could not create random genome after {max_attempts} attempts. Creating minimal safe genome.")
     genome = {
-        'num_conv_layers': 1,
-        'num_fc_layers': 1,
-        'filters': [32],
-        'kernel_sizes': [3],
-        'fc_nodes': [64],
-        'activations': ['relu', 'relu'],
-        'dropout_rate': 0.3,
-        'learning_rate': 0.001,
-        'optimizer': 'adam',
+        'num_conv_layers': config['min_conv_layers'],
+        'num_fc_layers': config['min_fc_layers'],
+        'filters': [config['min_filters']] * config['min_conv_layers'],
+        'kernel_sizes': [min(config['kernel_size_options'])] * config['min_conv_layers'],
+        'fc_nodes': [config['min_fc_nodes']] * config['min_fc_layers'],
+        'activations': [config_value(config, 'activation_options')[0]] * max(config['min_conv_layers'], config['min_fc_layers']),
+        'dropout_rate': config['min_dropout'],
+        'learning_rate': optimizer_learning_rates(config, config_value(config, 'optimizer_options')[0])[0],
+        'optimizer': config_value(config, 'optimizer_options')[0],
         'normalization_type': 'batch',
         'conv_topology': 'sequential',
         'residual_enabled': False,
@@ -163,5 +177,7 @@ def create_random_genome(config: dict) -> dict:
         'structural_history': []
     }
     genome = validate_and_fix_genome(genome, config)
+    if not is_genome_valid(genome, config):
+        raise ValueError('Configured search bounds cannot produce a valid random genome')
     genome['innovation_genes'] = build_innovation_genes(genome)
     return genome

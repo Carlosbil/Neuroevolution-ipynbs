@@ -23,6 +23,10 @@ def small_config(**overrides):
     config = get_default_config()
     config.update(
         {
+            "input_modality": "audio",
+            "num_frequency_bins": None,
+            "pre_fc_pool_shape": None,
+            "pre_fc_pool_length": None,
             "population_size": 4,
             "sequence_length": 32,
             "num_channels": 1,

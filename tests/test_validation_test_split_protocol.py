@@ -97,6 +97,25 @@ def test_fold_loader_can_explicitly_load_test_split(tmp_path):
     assert _loader_labels(test_loader) == [0, 0, 0, 1]
 
 
+def test_fitness_metrics_accept_bfloat16_probabilities():
+    class BFloatLogitModel(nn.Module):
+        def forward(self, data):
+            logits = torch.tensor([0.0, 2.0], dtype=torch.bfloat16, device=data.device)
+            return logits.expand(data.size(0), 2)
+
+    metrics = fitness._evaluate_model_on_loader(
+        BFloatLogitModel(),
+        _one_batch_loader([1, 1]),
+        torch.device("cpu"),
+        "cpu",
+        torch.bfloat16,
+        False,
+    )
+
+    assert metrics["accuracy"] == 100.0
+    assert metrics["f1_score"] == 100.0
+
+
 def test_fold_loader_cache_key_includes_eval_split(tmp_path):
     config = _write_tiny_fold(tmp_path)
     device = torch.device("cpu")
@@ -205,7 +224,7 @@ def test_final_evaluation_reports_test_metrics_after_validation_selection(monkey
 
     result = cross_validation.evaluate_single_fold(
         {"optimizer": "adam", "learning_rate": 0.001},
-        {"epoch_patience": 5, "improvement_threshold": 0.0},
+        {"num_epochs": 1, "epoch_patience": 5, "improvement_threshold": 0.0},
         _one_batch_loader([0]),
         _one_batch_loader([0, 0]),
         _one_batch_loader([1, 1, 1]),
