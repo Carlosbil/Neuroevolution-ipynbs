@@ -240,10 +240,14 @@ Cambia `DEFAULT_INPUT_MODALITY` en ese archivo: `spectrogram` es el perfil prede
 | `reference_injection_fraction` | 0.10 | Recorrer todas las referencias durante la búsqueda |
 | `num_epochs` / `epoch_patience` | 100 / 25 | Entrenar cada fold con selección por validación |
 | `early_stopping_generations` | 30 | Contar estancamiento una vez por generación evaluada |
-| `fold_parallel_workers` | 3 | Concurrencia inicial para modelos completos |
+| `fold_parallel_workers` | 3 | Concurrencia fija en CPU o con modo automático desactivado |
+| `fold_auto_workers` / `fold_auto_max_workers` | `True` / 10 | En CUDA, empezar con un fold y añadir hasta 10 según la VRAM |
+| `fold_vram_reserve_gib` / `fold_vram_reserve_fraction` | 2 GiB / 0.10 | Reservar el mayor de 2 GiB o el 10% de la VRAM total |
+| `fold_auto_growth_interval_s` | 30 | Añadir como máximo un fold cada 30 segundos |
+| `fold_oom_max_retries` | 2 | Reintentar un fold con menos concurrencia si falla la memoria |
 | `minimum_specificity` / `minimum_sensitivity` | 1% / 1% | Invalidar clasificadores que colapsan a una clase |
 | `require_all_folds` | `True` | Evitar recompensar evaluaciones incompletas |
-| `resume_evolution` | `False` | Comenzar con la configuración corregida |
+| `resume_evolution` | `True` | Reanudar automáticamente el progreso del experimento |
 
 Los optimizadores, sus rangos de learning rate y sus parámetros (`weight_decay`, `momentum`, etc.) también viven en el config. Los límites de la búsqueda de CNN propias son 11 capas convolucionales, 4 capas densas y 20 millones de parámetros. Las referencias tienen su propio límite, 150 millones; nunca se recortan para ajustarlas a los límites de las CNN propias.
 
@@ -263,7 +267,9 @@ Las antiguas plantillas reducidas `*_small`/`*_medium` siguen disponibles para c
 
 El perfil vowels usa folds internos de las personas de train. El conjunto global de validación monitoriza el checkpoint elegido; no entra en el fitness. El test global se carga tras elegir la arquitectura. El checkpoint es el mejor fold del genoma elegido, por lo que su F1 de monitorización puede diferir del F1 medio de los cinco folds.
 
-`resume_evolution=True` solo admite progresos nuevos con configuración compatible. Los JSON antiguos sin snapshot requieren comenzar una ejecución nueva. El contador de estancamiento y los parámetros de un descendiente ya no heredan valores incorrectos de evaluaciones anteriores.
+Por defecto, la ejecución busca `evolution_progress.json` en `CONFIG['artifacts_dir']` (por ejemplo, `artifacts/test_old_vowels_audio`) y restaura la población, el mejor individuo, el historial, el contador de estancamiento y los parámetros de evolución. Si la generación guardada ya terminó, continúa con la siguiente; si la población está pendiente de evaluación, retoma esa generación. `max_generations` es el límite total, contando las generaciones anteriores: aumentarlo permite continuar un run que alcanzó ese límite, siempre que no haya alcanzado el objetivo de fitness o el límite de estancamiento.
+
+Para trasladar un run, copia el JSON y su checkpoint `.pth` a la carpeta del experimento: las rutas del checkpoint se resuelven en la carpeta actual y la carpeta del dataset puede cambiar de ubicación conservando su nombre e identidad. El JSON por sí solo permite recuperar la evolución, pero no contiene los pesos entrenados ni el estado de un entrenamiento interrumpido dentro de un fold. La configuración de entrenamiento y el tamaño de población deben ser compatibles; si el progreso está dañado o es incompatible, la ejecución se detiene conservando los archivos anteriores. Los JSON antiguos sin snapshot requieren comenzar una ejecución nueva. Para empezar de cero, usa otra carpeta de artifacts o establece explícitamente `resume_evolution=False`.
 
 ```python
 from neuroevolution import CONFIG, setup_device_and_seeds, HybridNeuroevolution
@@ -402,10 +408,21 @@ Configurable mediante los selectores `evolution_*` y `final_*` en CONFIG.
 
 2. **Checkpointing**: El mejor modelo se guarda dinámicamente según F1-score de validación. Interrumpir (Ctrl+C) es seguro—el mejor hasta ese momento está en `.pth`.
 
-3. **Memoria GPU**: Si OOM al evaluar 5 folds en paralelo:
-   - Reducir `batch_size`
-   - Reducir `fold_parallel_workers` en `neuroevolution/config.py`
-   - Usar CPU (`device = "cpu"`)
+3. **Memoria GPU**: La cola de evolución en CUDA ajusta la concurrencia automáticamente.
+   Consulta la VRAM libre del dispositivo CUDA seleccionado (también su partición MIG),
+   empieza con un fold y aumenta de uno en uno cuando queda margen para otro fold
+   además de la reserva. Usa una estimación inicial de 4 GiB por fold y eleva esa
+   estimación según la memoria observada, con un factor de seguridad de 1.5.
+   La reserva es preventiva: las arquitecturas cambian y pueden tener picos mayores.
+   Si ocurre un OOM o el fallo de NVML del allocator, deja terminar los folds activos,
+   libera caché sin tensores activos y reintenta el fold con un límite menor durante
+   el resto de la generación. Si agota los reintentos, detiene la evaluación y guarda
+   el error, sin convertirlo en fitness cero. Los errores ajenos a memoria mantienen
+   su tratamiento anterior. La telemetría se guarda en `fold_progress.json` y los
+   cambios de concurrencia aparecen en el log. Estas opciones se aplican a la cola
+   global del motor evolutivo, no a la evaluación final ni al replay del ganador.
+   Para concurrencia fija, usa `fold_auto_workers=False` y `fold_parallel_workers=N`.
+   Si un fold aislado no cabe, reduce `batch_size` o utiliza una partición MIG mayor.
 
 4. **Logs detallados**: Todo `print()` se guarda en `execution_log.txt`. Revisar ahí si falla evolution.
 

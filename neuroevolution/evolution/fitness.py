@@ -436,7 +436,10 @@ def train_fold_in_thread(genome: dict, fold_num: int, config: dict, device: torc
             device,
             eval_split='validation',
         )
-        if int(config.get('fold_parallel_workers', 1)) > 1 and _resolve_cache_mode(config) != 'none':
+        concurrent = int(config.get('fold_parallel_workers', 1)) > 1 or (
+            device.type == 'cuda' and config.get('fold_auto_workers', True)
+        )
+        if concurrent and _resolve_cache_mode(config) != 'none':
             # Cached datasets are shared, but each concurrent training needs
             # its own DataLoader iterator (especially with persistent workers).
             fold_train_loader = _build_dataloader(
@@ -579,7 +582,8 @@ def train_fold_in_thread(genome: dict, fold_num: int, config: dict, device: torc
         return fold_num, metric_value(metrics, fitness_metric), model, metrics
 
     except Exception as e:
-        if isinstance(e, torch.cuda.OutOfMemoryError):
+        from .fold_scheduler import is_cuda_memory_error
+        if is_cuda_memory_error(e):
             raise
         print(f"      ERROR in Fold {fold_num}: {e}")
         import traceback

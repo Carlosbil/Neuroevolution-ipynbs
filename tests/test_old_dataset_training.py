@@ -82,7 +82,8 @@ def test_notebook_loads_variable_fold_sizes_and_real_only_global_test(tmp_path):
     notebook = json.loads(Path('test.ipynb').read_text(encoding='utf-8'))
     config = get_default_config()
     # A small spectrogram dataset with fewer variants exercises CSV-based sizes.
-    config.update(input_modality='spectrogram', num_frequency_bins=4, sequence_length=8, num_folds=5)
+    config.update(input_modality='spectrogram', num_frequency_bins=4, sequence_length=8, num_folds=5,
+                  data_path=str(tmp_path), fold_files_subdirectory='.', artifacts_dir=str(tmp_path))
     shape = (4, 8)
     records = []
     for label in ('Control', 'Patologicas'):
@@ -106,6 +107,10 @@ def test_notebook_loads_variable_fold_sizes_and_real_only_global_test(tmp_path):
             write(train.loc[mask], f'fold_{fold}_{split}.csv', split, f'_fold_{fold + 1}')
     namespace = {'csv': csv, 'np': np, 'torch': torch, 'DataLoader': DataLoader, 'TensorDataset': TensorDataset,
                  'CONFIG': config, 'DATASET_ROOT': tmp_path, 'ARRAY_ROOT': tmp_path, 'DATASET_ID': 'old_vowels'}
+    helper = next(node for node in ast.parse(''.join(notebook['cells'][3]['source'])).body
+                  if isinstance(node, ast.FunctionDef) and node.name == 'resolve_best_genome')
+    exec(compile(ast.Module(body=[helper], type_ignores=[]), '<winner-resolver>', 'exec'), namespace)
+    namespace['best_genome'] = {'id': 'already-selected', 'fitness': 75.0}
     exec(''.join(notebook['cells'][7]['source']), namespace)
     # Only load final data; never launch architecture search or final training in a unit test.
     source = ''.join(notebook['cells'][19]['source']).split('final_test_results = evaluate_single_fold')[0]

@@ -262,7 +262,8 @@ def get_default_config(info_path: str = None) -> dict:
     dataset_config = DATASET_CONFIGS[DEFAULT_DATASET]
     return {
         'seed': 42,
-        'resume_evolution': False,
+        # Resume automatically from this experiment's artifacts when available.
+        'resume_evolution': True,
         'speciation_enabled': True,
         'species_elite_fraction': 0.15,
         'random_immigrant_fraction': 0.10,
@@ -384,6 +385,16 @@ def get_default_config(info_path: str = None) -> dict:
         # Use 1 for sequential execution, 5 for five simultaneous folds, or
         # another positive value if GPU memory permits it.
         'fold_parallel_workers': 3,
+        # CUDA evolution starts with one fold and grows within the VRAM budget.
+        # CPU and explicit fixed mode still use fold_parallel_workers.
+        'fold_auto_workers': True,
+        'fold_auto_max_workers': 10,
+        'fold_auto_growth_interval_s': 30.0,
+        'fold_vram_reserve_gib': 2.0,
+        'fold_vram_reserve_fraction': 0.10,
+        'fold_vram_initial_fold_gib': 4.0,
+        'fold_vram_safety_factor': 1.5,
+        'fold_oom_max_retries': 2,
         'fold_cache_mode': 'ram' if modality == 'spectrogram' else 'none',  # Options: 'none', 'ram', 'memmap'
         # Fold arrays are cached in RAM as tensors. Extra worker processes add
         # IPC overhead (and multiply across the five parallel folds) without
@@ -631,6 +642,24 @@ def validate_config(config: dict) -> None:
         raise ValueError("amp_dtype must be either 'float16' or 'bfloat16'")
     if int(config.get('fold_parallel_workers', 1)) < 1:
         raise ValueError("fold_parallel_workers must be at least 1")
+    if not isinstance(config.get('fold_auto_workers', True), bool):
+        raise ValueError("fold_auto_workers must be a boolean")
+    if int(config.get('fold_auto_max_workers', 10)) < 1:
+        raise ValueError("fold_auto_max_workers must be at least 1")
+    if int(config.get('fold_oom_max_retries', 2)) < 0:
+        raise ValueError("fold_oom_max_retries must be non-negative")
+    for key, default in (('fold_auto_growth_interval_s', 30.0),
+                         ('fold_vram_reserve_gib', 2.0),
+                         ('fold_vram_initial_fold_gib', 4.0)):
+        value = float(config.get(key, default))
+        if not np.isfinite(value) or value <= 0:
+            raise ValueError(f"{key} must be finite and positive")
+    reserve_fraction = float(config.get('fold_vram_reserve_fraction', 0.10))
+    if not np.isfinite(reserve_fraction) or not 0 <= reserve_fraction < 1:
+        raise ValueError("fold_vram_reserve_fraction must be in [0, 1)")
+    safety_factor = float(config.get('fold_vram_safety_factor', 1.5))
+    if not np.isfinite(safety_factor) or safety_factor < 1:
+        raise ValueError("fold_vram_safety_factor must be finite and at least 1")
 
     fold_cache_mode = str(config.get('fold_cache_mode', 'ram')).lower()
     if fold_cache_mode not in {'none', 'ram', 'memmap'}:
@@ -762,6 +791,7 @@ def get_winner_replay_config() -> dict:
         'winner_progress_path': 'C:/Users/carlo/Downloads/evolution_progress.json',
         'winner_expected_id': '68e15b97',
         'fold_parallel_workers': 1,
+        'fold_auto_workers': False,
         'num_epochs': 100,
         'epoch_patience': 18,
         'fc_activation_source': 'genome',

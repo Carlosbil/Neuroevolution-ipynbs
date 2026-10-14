@@ -4,6 +4,7 @@ import torch
 import torch.nn as nn
 
 from neuroevolution.config import ACTIVATION_FUNCTIONS, config_value
+from .normalization import SingletonSafeBatchNorm1d
 from .genome_validator import (
     calculate_inception_branch_channels,
     calculate_inception_reduction_channels,
@@ -197,7 +198,7 @@ class EvolvableCNN2D(nn.Module):
         norm = self.genome.get('normalization_type', 'batch')
         for i, nodes in enumerate(self.genome['fc_nodes'][:self.genome['num_fc_layers']]):
             layers.append(nn.Linear(input_size, nodes))
-            layers.append(nn.LayerNorm(nodes) if norm == 'layer' else nn.BatchNorm1d(nodes))
+            layers.append(nn.LayerNorm(nodes) if norm == 'layer' else SingletonSafeBatchNorm1d(nodes))
             activation = self.config.get('fc_activation_source', 'genome')
             if activation == 'genome':
                 activation = self.genome['activations'][i % len(self.genome['activations'])]

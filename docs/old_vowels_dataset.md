@@ -102,6 +102,13 @@ Reiniciar el kernel del notebook después de cambiar cualquiera de los selectore
 | `num_channels` | 1 | 1 |
 | `num_frequency_bins` | `None` | 64 |
 | `sequence_length` | 11520 | 44 |
+| `batch_size` | 2 | 8 |
+
+Estos son audios por lote, independientes del reparto por persona. Si el último
+lote de entrenamiento contiene un solo audio, BatchNorm de las capas densas usa
+sus estadísticas acumuladas para ese lote y mantiene el cálculo de gradientes,
+sin descartar el audio ni actualizar las estadísticas con una sola muestra.
+En la CNN de audio, LayerNorm normaliza los canales en cada instante temporal.
 
 En ambos casos: `data_path = artifacts/old_vowels_dataset`,
 `dataset_id = old_vowels`, `num_folds = 5`, `audio_sample_rate_hz = 24000`,

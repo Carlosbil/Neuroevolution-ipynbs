@@ -16,6 +16,7 @@ import random
 import uuid
 import json
 import time
+import gc
 from collections import deque
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from queue import Empty, SimpleQueue
@@ -50,6 +51,7 @@ from ..models.genome_validator import (
 )
 from ..models.evolvable_cnn import EvolvableCNN
 from .fitness import aggregate_fold_results, train_fold_in_thread, train_fold_on_cuda_stream
+from .fold_scheduler import FoldMemoryFailure, VramFoldScheduler, is_cuda_memory_error
 
 
 class HybridNeuroevolution:
@@ -198,11 +200,13 @@ class HybridNeuroevolution:
             },
         }
 
-        with open(self.progress_json_path, 'w', encoding='utf-8') as progress_file:
+        temporary_path = self.progress_json_path + '.tmp'
+        with open(temporary_path, 'w', encoding='utf-8') as progress_file:
             json.dump(progress_data, progress_file, indent=2)
+        os.replace(temporary_path, self.progress_json_path)
 
     def _load_evolution_progress(self) -> bool:
-        """Loads evolution state from JSON file if exists."""
+        """Restore this experiment; a failed load must never reset its artifacts."""
         if not self.config['resume_evolution'] or not os.path.exists(self.progress_json_path):
             return False
 
@@ -210,12 +214,14 @@ class HybridNeuroevolution:
             with open(self.progress_json_path, 'r', encoding='utf-8') as progress_file:
                 progress_data = json.load(progress_file)
 
+            if not isinstance(progress_data, dict):
+                raise ValueError('Evolution progress must be a JSON object')
             saved_config = progress_data.get('config_snapshot')
-            if saved_config is None:
+            if not isinstance(saved_config, dict):
                 raise ValueError('Legacy progress has no configuration snapshot; set resume_evolution=False to start a clean experiment')
             training_keys = ('input_modality', 'num_channels', 'num_frequency_bins', 'sequence_length',
                              'num_classes', 'batch_size', 'num_epochs', 'epoch_patience',
-                             'seed', 'num_folds', 'fitness_metric', 'fold_selection_metric', 'data_path',
+                             'seed', 'num_folds', 'fitness_metric', 'fold_selection_metric',
                              'improvement_threshold', 'metric_improvement_threshold',
                              'validation_frequency_epochs', 'max_batches_per_epoch',
                              'pre_fc_pool_shape', 'pre_fc_pool_length', 'conv_dropout_rate',
@@ -226,8 +232,19 @@ class HybridNeuroevolution:
                              'reference_dropout_rate', 'minimum_specificity', 'minimum_sensitivity')
             current_config = json.loads(json.dumps(self.config))
             changed = [key for key in training_keys if saved_config.get(key) != current_config.get(key)]
+            # Dataset directories may move with the project (including Linux ->
+            # Windows). Keep checking dataset identity and the directory name.
+            def portable_basename(path):
+                return str(path).replace('\\', '/').rstrip('/').rsplit('/', 1)[-1]
+
+            if portable_basename(saved_config.get('data_path')) != portable_basename(current_config.get('data_path')):
+                changed.append('data_path')
+            population = progress_data.get('population')
+            if not isinstance(population, list) or not all(isinstance(genome, dict) and genome.get('id') for genome in population):
+                raise ValueError('Evolution progress has no valid saved population')
             if changed or len(progress_data.get('population', [])) != self.config['population_size']:
-                raise ValueError(f'Resume configuration differs from saved training: {changed}; start a clean experiment')
+                raise ValueError(f'Resume configuration differs from saved training: {changed}; '
+                                 'use the saved configuration or a different artifacts_dir')
 
             self.generation = int(progress_data.get('generation', 0))
             self.population = progress_data.get('population', [])
@@ -242,13 +259,23 @@ class HybridNeuroevolution:
             self.best_checkpoint_path = progress_data.get('best_checkpoint_path', None)
             self.last_evaluated_generation = progress_data.get('last_evaluated_generation')
             self.template_cursor = int(progress_data.get('template_cursor', 0))
-            self.current_mutation_rate = progress_data.get('runtime_state', {}).get('current_mutation_rate', self.current_mutation_rate)
+            self._update_incremental_complexity()
+            runtime_state = progress_data.get('runtime_state', {})
+            self.current_mutation_rate = runtime_state.get('current_mutation_rate', self.current_mutation_rate)
+            self.current_max_conv_layers = runtime_state.get('current_max_conv_layers', self.current_max_conv_layers)
+            self.current_max_fc_layers = runtime_state.get('current_max_fc_layers', self.current_max_fc_layers)
+            if self.best_checkpoint_path:
+                local_checkpoint = os.path.join(self.run_artifacts_dir, portable_basename(self.best_checkpoint_path))
+                if os.path.isfile(local_checkpoint):
+                    self.best_checkpoint_path = local_checkpoint
+                elif not os.path.isfile(self.best_checkpoint_path):
+                    print(f"WARNING: Saved best model weights are missing: {local_checkpoint}. "
+                          'Resuming population and history from JSON without the previous model weights.')
+                    self.best_checkpoint_path = None
             return True
-        except ValueError:
-            raise
         except Exception as e:
-            print(f"WARNING: Could not load evolution progress: {e}")
-            return False
+            raise ValueError(f"Could not resume evolution from {self.progress_json_path}: {e}. "
+                             'Existing artifacts have been preserved.') from e
 
     def _update_incremental_complexity(self):
         """Updates complexity caps based on current generation."""
@@ -500,7 +527,6 @@ class HybridNeuroevolution:
     def initialize_population(self):
         """Initializes population or resumes from saved progress."""
         if self._load_evolution_progress():
-            self._update_incremental_complexity()
             print(f"Resuming evolution from generation {self.generation} using: {self.progress_json_path}")
             return
 
@@ -659,6 +685,8 @@ class HybridNeuroevolution:
     def _save_fold_progress(self):
         """Publish one consistent progress snapshot from the scheduling thread."""
         snapshot = {'generation': self.generation, 'individuals': self.fold_progress}
+        if getattr(self, 'fold_scheduler_progress', None) is not None:
+            snapshot['scheduler'] = self.fold_scheduler_progress
         temporary_path = f'{self.fold_progress_path}.tmp'
         with open(temporary_path, 'w', encoding='utf-8') as progress_file:
             json.dump(snapshot, progress_file, indent=2)
@@ -668,6 +696,13 @@ class HybridNeuroevolution:
         """Use one bounded fold queue for the entire population."""
         num_folds = int(self.config.get('num_folds', 5))
         worker_limit = max(1, int(self.config.get('fold_parallel_workers', 1)))
+        adaptive = self.device.type == 'cuda' and self.config.get('fold_auto_workers', True)
+        scheduler = VramFoldScheduler(self.config, self.device) if adaptive else None
+        if scheduler is not None:
+            worker_limit = scheduler.maximum
+        self.fold_scheduler_progress = None
+        retries = {}
+        draining = False
         fold_config = get_data_phase_config(self.config, 'evolution')
         train_fold = train_fold_on_cuda_stream if self.device.type == 'cuda' else train_fold_in_thread
         pending = deque()
@@ -712,7 +747,12 @@ class HybridNeuroevolution:
             progress_events.put((index, fold, 'started', None, None))
             worker_config = with_fold_progress_callback(fold_config,
                 lambda epoch, total: progress_events.put((index, fold, 'epoch', epoch, total)))
-            result = train_fold(self.population[index], fold, worker_config, self.device)
+            try:
+                result = train_fold(self.population[index], fold, worker_config, self.device)
+            except RuntimeError as error:
+                if not adaptive or not is_cuda_memory_error(error):
+                    raise
+                result = FoldMemoryFailure(str(error))
             return result, time.perf_counter() - started
 
         def collect_progress_events():
@@ -734,12 +774,33 @@ class HybridNeuroevolution:
                 self._save_fold_progress()
 
         def dispatch_folds(executor):
+            nonlocal draining
+            if scheduler is not None:
+                if draining:
+                    if futures:
+                        return
+                    draining = False
+                if not futures and pending:
+                    # Also release idle cache between generations/serial folds:
+                    # mem_get_info otherwise counts cached blocks as occupied.
+                    gc.collect()
+                    with torch.cuda.device(self.device):
+                        torch.cuda.empty_cache()
+                scheduler.update(len(futures))
+                self.fold_scheduler_progress = scheduler.snapshot()
             while pending and len(futures) < worker_limit:
+                if scheduler is not None and not scheduler.admit(len(futures)):
+                    break
                 index, fold = pending.popleft()
                 self.fold_progress[keys[index]]['status'] = 'running'
                 self.fold_progress[keys[index]]['folds'][str(fold)]['status'] = 'running'
                 future = executor.submit(timed_train_fold, index, fold)
                 futures[future] = (index, fold)
+                if scheduler is not None:
+                    self.fold_scheduler_progress = scheduler.snapshot()
+                    # One admission per memory observation: worker startup has
+                    # not necessarily allocated its tensors yet.
+                    break
 
         with ThreadPoolExecutor(max_workers=worker_limit) as executor:
             dispatch_folds(executor)
@@ -752,8 +813,11 @@ class HybridNeuroevolution:
                 yield item
 
             last_heartbeat = time.monotonic()
-            while futures:
+            while futures or pending:
                 completed, _ = wait(tuple(futures), timeout=5, return_when=FIRST_COMPLETED)
+                if scheduler is not None:
+                    scheduler.update(len(futures))
+                    self.fold_scheduler_progress = scheduler.snapshot()
                 collect_progress_events()
                 if not completed and time.monotonic() - last_heartbeat >= 30:
                     completed_count = sum(len(state['results']) for state in states.values())
@@ -765,13 +829,39 @@ class HybridNeuroevolution:
                 for future in completed:
                     index, fold = futures.pop(future)
                     try:
-                        (result_fold, score, fold_model, metrics), fold_elapsed = future.result()
+                        fold_result, fold_elapsed = future.result()
                     except Exception:
                         entry = self.fold_progress[keys[index]]
                         entry['status'] = 'failed'
                         entry['folds'][str(fold)]['status'] = 'failed'
                         self._save_fold_progress()
                         raise
+                    if isinstance(fold_result, FoldMemoryFailure):
+                        entry = self.fold_progress[keys[index]]
+                        fold_entry = entry['folds'][str(fold)]
+                        attempt = retries.get((index, fold), 0) + 1
+                        retries[index, fold] = attempt
+                        fold_entry.update({'status': 'retrying', 'memory_error': fold_result.message,
+                                           'retries': attempt, 'fitness': None})
+                        states[index]['elapsed'] += fold_elapsed
+                        scheduler.backoff()
+                        self.fold_scheduler_progress = scheduler.snapshot()
+                        if attempt > int(self.config.get('fold_oom_max_retries', 2)):
+                            entry['status'] = fold_entry['status'] = 'failed'
+                            self._save_fold_progress()
+                            raise RuntimeError(
+                                f"CUDA memory failure for {self.population[index]['id']} fold {fold} "
+                                f"after {attempt} attempts; evaluation stopped without assigning "
+                                f"a zero fitness. Last error: {fold_result.message}"
+                            )
+                        pending.appendleft((index, fold))
+                        draining = True
+                        print(f"      Retrying individual {self.population[index]['id']} fold {fold} "
+                              f"after CUDA memory failure (retry {attempt}); draining active folds.")
+                        self._save_fold_progress()
+                        continue
+                    result_fold, score, fold_model, metrics = fold_result
+                    del fold_result
                     if result_fold != fold:
                         raise ValueError(f"Expected fold {fold}, received {result_fold}")
                     state = states[index]
@@ -812,8 +902,14 @@ class HybridNeuroevolution:
                         self._save_fold_progress()
                         yield index, fitness, best_model, aggregated, elapsed, 'trained', None
                         del best_model
-                    dispatch_folds(executor)
                     self._save_fold_progress()
+                # Release futures before cleanup/admission; successful futures
+                # retain their result models even after the local is deleted.
+                if completed:
+                    del future
+                completed.clear()
+                dispatch_folds(executor)
+                self._save_fold_progress()
 
     def evaluate_population(self):
         """Evaluates all individuals in the population and tracks statistics."""

@@ -6,6 +6,7 @@ import torch
 import torch.nn as nn
 import random
 from neuroevolution.config import ACTIVATION_FUNCTIONS
+from neuroevolution.models.normalization import SingletonSafeBatchNorm1d
 from neuroevolution.models.genome_validator import (
     calculate_inception_branch_channels,
     calculate_inception_reduction_channels,
@@ -293,7 +294,7 @@ class EvolvableCNN(nn.Module):
 
             # Normalization layer (Layer Normalization or Batch Normalization)
             if normalization_type == 'layer':
-                layers.append(nn.LayerNorm(out_channels))
+                layers.append(ChannelLayerNorm1d(out_channels))
             else:
                 # Batch normalization (default)
                 layers.append(nn.BatchNorm1d(out_channels))
@@ -512,7 +513,7 @@ class EvolvableCNN(nn.Module):
                 layers.append(nn.LayerNorm(output_size))
             else:
                 # Batch normalization for FC layers (default)
-                layers.append(nn.BatchNorm1d(output_size))
+                layers.append(SingletonSafeBatchNorm1d(output_size))
 
             # Activation
             activation = self.config.get('fc_activation_source', 'genome')
@@ -544,7 +545,7 @@ class EvolvableCNN(nn.Module):
         x = self.pre_fc_pool(x)
 
         # Flatten
-        x = x.view(x.size(0), -1)
+        x = x.reshape(x.size(0), -1)
 
         # Fully connected layers
         for layer in self.fc_layers:
