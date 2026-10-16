@@ -607,7 +607,8 @@ def validate_and_fix_genome(genome: dict, config: dict) -> dict:
 def stable_genome_signature(genome: dict, config: dict = None) -> tuple:
     """Returns a stable architecture signature suitable for fitness caches."""
     if genome.get('model_kind') == 'reference':
-        return ('reference', genome['reference_architecture_id'], genome['optimizer'],
+        dimensions = genome.get('reference_dimensions', 1 if config and config.get('input_modality') == 'audio' else 2)
+        return ('reference', genome['reference_architecture_id'], dimensions, genome['optimizer'],
                 genome['learning_rate'], config.get('reference_dropout_rate') if config else None)
     fixed = {k: list(v) if isinstance(v, list) else v for k, v in genome.items()}
     if config is not None:

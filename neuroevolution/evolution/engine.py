@@ -704,6 +704,14 @@ class HybridNeuroevolution:
         retries = {}
         draining = False
         fold_config = get_data_phase_config(self.config, 'evolution')
+        print(
+            f"      Fold training: batch_size={fold_config['batch_size']}, "
+            f"max_epochs={fold_config['num_epochs']}, "
+            f"patience={fold_config['epoch_patience']}, "
+            f"AMP={fold_config.get('use_amp', True)} "
+            f"({fold_config.get('amp_dtype', 'float16')}), "
+            f"cache={fold_config.get('fold_cache_mode', 'none')}"
+        )
         train_fold = train_fold_on_cuda_stream if self.device.type == 'cuda' else train_fold_in_thread
         pending = deque()
         cached = []
@@ -750,7 +758,7 @@ class HybridNeuroevolution:
             try:
                 result = train_fold(self.population[index], fold, worker_config, self.device)
             except RuntimeError as error:
-                if not adaptive or not is_cuda_memory_error(error):
+                if not is_cuda_memory_error(error):
                     raise
                 result = FoldMemoryFailure(str(error))
             return result, time.perf_counter() - started
@@ -776,18 +784,23 @@ class HybridNeuroevolution:
         def dispatch_folds(executor):
             nonlocal draining
             if scheduler is not None:
-                if draining:
-                    if futures:
-                        return
-                    draining = False
-                if not futures and pending:
-                    # Also release idle cache between generations/serial folds:
-                    # mem_get_info otherwise counts cached blocks as occupied.
+                if draining and not futures:
+                    # Synchronizing cache cleanup is only needed after a memory
+                    # failure, not every time the queue briefly becomes empty.
                     gc.collect()
                     with torch.cuda.device(self.device):
                         torch.cuda.empty_cache()
-                scheduler.update(len(futures))
+                    draining = False
+                warming = sum(not self.fold_progress[keys[index]]['folds'][str(fold)].get('epoch')
+                              for index, fold in futures.values())
+                scheduler.update(len(futures), warming=warming)
                 self.fold_scheduler_progress = scheduler.snapshot()
+                self.fold_scheduler_progress['draining'] = draining
+                if draining:
+                    # Admission waits for running folds, but telemetry and the
+                    # cooldown must keep advancing while those folds train.
+                    self.fold_scheduler_progress['block_reason'] = 'draining_after_memory_error'
+                    return
             while pending and len(futures) < worker_limit:
                 if scheduler is not None and not scheduler.admit(len(futures)):
                     break
@@ -797,10 +810,8 @@ class HybridNeuroevolution:
                 future = executor.submit(timed_train_fold, index, fold)
                 futures[future] = (index, fold)
                 if scheduler is not None:
+                    scheduler.reserve_slot()
                     self.fold_scheduler_progress = scheduler.snapshot()
-                    # One admission per memory observation: worker startup has
-                    # not necessarily allocated its tensors yet.
-                    break
 
         with ThreadPoolExecutor(max_workers=worker_limit) as executor:
             dispatch_folds(executor)
@@ -815,15 +826,26 @@ class HybridNeuroevolution:
             last_heartbeat = time.monotonic()
             while futures or pending:
                 completed, _ = wait(tuple(futures), timeout=5, return_when=FIRST_COMPLETED)
-                if scheduler is not None:
-                    scheduler.update(len(futures))
-                    self.fold_scheduler_progress = scheduler.snapshot()
                 collect_progress_events()
                 if not completed and time.monotonic() - last_heartbeat >= 30:
-                    completed_count = sum(len(state['results']) for state in states.values())
+                    completed_count = sum(
+                        fold['status'] in {'completed', 'failed'}
+                        for entry in self.fold_progress.values() for fold in entry['folds'].values()
+                    )
+                    active_progress = []
+                    for index, fold in futures.values():
+                        progress = self.fold_progress[keys[index]]['folds'][str(fold)]
+                        epoch = progress.get('epoch')
+                        detail = f"epoch {epoch}/{progress['total_epochs']}" if epoch is not None else 'loading'
+                        active_progress.append(f"{self.population[index]['id']} fold {fold}: {detail}")
                     print(
                         f"      Fold queue alive: {len(futures)} active, {len(pending)} pending, "
                         f"{completed_count} completed in this generation."
+                        + (f" Limit={scheduler.limit}/{scheduler.maximum}; "
+                           f"VRAM free={scheduler.free / (1024 ** 3):.2f} GiB; "
+                           f"state={'draining_after_memory_error' if draining else scheduler.block_reason}"
+                           if scheduler is not None and scheduler.free is not None else '')
+                        + (f" Active: {'; '.join(active_progress)}" if active_progress else '')
                     )
                     last_heartbeat = time.monotonic()
                 for future in completed:
@@ -843,23 +865,23 @@ class HybridNeuroevolution:
                         retries[index, fold] = attempt
                         fold_entry.update({'status': 'retrying', 'memory_error': fold_result.message,
                                            'retries': attempt, 'fitness': None})
-                        states[index]['elapsed'] += fold_elapsed
-                        scheduler.backoff()
-                        self.fold_scheduler_progress = scheduler.snapshot()
-                        if attempt > int(self.config.get('fold_oom_max_retries', 2)):
-                            entry['status'] = fold_entry['status'] = 'failed'
+                        if scheduler is not None:
+                            scheduler.backoff()
+                            self.fold_scheduler_progress = scheduler.snapshot()
+                            draining = True
+                        if scheduler is not None and attempt <= int(self.config.get('fold_oom_max_retries', 2)):
+                            states[index]['elapsed'] += fold_elapsed
+                            pending.appendleft((index, fold))
+                            print(f"      Retrying individual {self.population[index]['id']} fold {fold} "
+                                  f"after CUDA memory failure (retry {attempt}); draining active folds.")
                             self._save_fold_progress()
-                            raise RuntimeError(
-                                f"CUDA memory failure for {self.population[index]['id']} fold {fold} "
-                                f"after {attempt} attempts; evaluation stopped without assigning "
-                                f"a zero fitness. Last error: {fold_result.message}"
-                            )
-                        pending.appendleft((index, fold))
-                        draining = True
-                        print(f"      Retrying individual {self.population[index]['id']} fold {fold} "
-                              f"after CUDA memory failure (retry {attempt}); draining active folds.")
-                        self._save_fold_progress()
-                        continue
+                            continue
+                        print(
+                            f"      CUDA memory failure for {self.population[index]['id']} fold {fold} "
+                            f"after {attempt} attempts; assigning 0% and continuing. "
+                            f"Last error: {fold_result.message}"
+                        )
+                        fold_result = (fold, 0.0, None, None)
                     result_fold, score, fold_model, metrics = fold_result
                     del fold_result
                     if result_fold != fold:
@@ -968,7 +990,9 @@ class HybridNeuroevolution:
                     self.save_best_checkpoint(genome, model)
             del model
 
-            generation_log_lines.append(
+            # Publish completed individuals immediately for tail -f; the full
+            # generation summary is appended after the population completes.
+            self._append_generation_log(
                 f"Individual {i+1}/{len(self.population)} | ID={genome['id']} | "
                 f"status={evaluation_status} | fitness={fitness:.2f}% | "
                 f"time={self._format_seconds(genome.get('evaluation_time_seconds'))}s | "

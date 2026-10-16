@@ -1,4 +1,4 @@
-"""Complete Torchvision classifiers, with explicit task input/output adapters.
+"""Complete reference classifiers for 2D spectrograms and 1D waveforms.
 
 No blocks, widths or hidden classifier layers are clipped to genetic bounds.
 Weights are initialized from scratch; constructing a model never downloads files.
@@ -68,7 +68,7 @@ class LeNet5(nn.Module):
         return self.classifier(self.activation(self.f6(x)))
 
 
-def _native_model(architecture_id, config):
+def _native_model_2d(architecture_id, config):
     if architecture_id == 'lenet5':
         return LeNet5(int(config['num_channels']), int(config['num_classes']))
     from torchvision import models
@@ -100,21 +100,53 @@ def _native_model(architecture_id, config):
     return model
 
 
+def reference_dimensions(config):
+    modality = str(config['input_modality']).lower()
+    if modality not in {'audio', 'image', 'spectrogram'}:
+        raise ValueError(f'Unsupported reference input modality: {modality}')
+    return 1 if modality == 'audio' else 2
+
+
+def _native_model(architecture_id, config):
+    if reference_dimensions(config) == 2:
+        return _native_model_2d(architecture_id, config)
+    from .reference_architectures_1d import convert_reference_to_1d
+    target = torch.empty(0).device
+    # Build the source graph without allocating the large 2D weights. The
+    # independent temporal copy is then initialized from scratch on the target.
+    with torch.device('meta'):
+        model = convert_reference_to_1d(_native_model_2d(architecture_id, config))
+    if target.type != 'meta':
+        model.to_empty(device=target)
+        for module in model.modules():
+            if hasattr(module, 'reset_parameters'):
+                module.reset_parameters()
+    return model
+
+
 class ReferenceClassifier(nn.Module):
     def __init__(self, genome, config):
         super().__init__()
-        if str(config['input_modality']).lower() not in {'image', 'spectrogram'}:
-            raise ValueError('Complete 2D reference architectures require spectrogram input')
+        self.dimensions = reference_dimensions(config)
+        if genome.get('reference_dimensions', self.dimensions) != self.dimensions:
+            raise ValueError('Reference genome dimensions do not match input modality')
         self.architecture_id = genome['reference_architecture_id']
         self.model = _native_model(self.architecture_id, config)
-        self.input_size = reference_input_size(config, self.architecture_id)
+        self.input_size = ((int(config['sequence_length']),) if self.dimensions == 1
+                           else reference_input_size(config, self.architecture_id))
         self.auxiliary_logits = ()
 
     def forward(self, x):
-        if x.ndim == 3:
-            x = x.unsqueeze(1)
-        if tuple(x.shape[-2:]) != self.input_size:
-            x = F.interpolate(x, size=self.input_size, mode='bilinear', align_corners=False)
+        if self.dimensions == 1:
+            if x.ndim == 2:
+                x = x.unsqueeze(1)
+            if x.ndim != 3:
+                raise ValueError('Audio references expect (batch, channels, samples)')
+        else:
+            if x.ndim == 3:
+                x = x.unsqueeze(1)
+            if tuple(x.shape[-2:]) != self.input_size:
+                x = F.interpolate(x, size=self.input_size, mode='bilinear', align_corners=False)
         output = self.model(x)
         self.auxiliary_logits = ()
         if isinstance(output, torch.Tensor):
@@ -123,7 +155,7 @@ class ReferenceClassifier(nn.Module):
         return output.logits
 
     def get_architecture_summary(self):
-        return f"Complete reference: {self.architecture_id} | input adapter: {self.input_size}"
+        return f"Complete reference: {self.architecture_id} {self.dimensions}D | input: {self.input_size}"
 
 
 def classification_loss(model, logits, target, criterion, config):
@@ -136,14 +168,15 @@ def classification_loss(model, logits, target, criterion, config):
 
 
 @lru_cache(maxsize=256)
-def _parameter_count(architecture_id, channels, classes, auxiliary):
+def _parameter_count(architecture_id, channels, classes, auxiliary, dimensions):
     # Torchvision initializes Dynamo during import; do so before entering the
     # meta device context (Torch 2.8 otherwise sees a circular initialization).
     from torchvision import models  # noqa: F401
     # Meta tensors retain shapes but allocate no model weights. Counts include
     # the complete hidden classifier and any enabled auxiliary classifiers.
     config = {'num_channels': channels, 'num_classes': classes,
-              'reference_aux_logits': auxiliary, 'reference_dropout_rate': None}
+              'reference_aux_logits': auxiliary, 'reference_dropout_rate': None,
+              'input_modality': 'audio' if dimensions == 1 else 'spectrogram'}
     with torch.device('meta'):
         model = _native_model(architecture_id, config)
     return sum(parameter.numel() for parameter in model.parameters())
@@ -151,23 +184,36 @@ def _parameter_count(architecture_id, channels, classes, auxiliary):
 
 def reference_parameter_count(genome, config):
     return _parameter_count(genome['reference_architecture_id'], int(config['num_channels']),
-                            int(config['num_classes']), bool(config['reference_aux_logits']))
+                            int(config['num_classes']), bool(config['reference_aux_logits']),
+                            reference_dimensions(config))
 
 
 def validate_reference_genome(genome, config):
     from ..config import REFERENCE_ARCHITECTURE_IDS
     if genome.get('reference_architecture_id') not in REFERENCE_ARCHITECTURE_IDS:
         raise ValueError('Unknown complete reference architecture')
-    if str(config['input_modality']).lower() not in {'image', 'spectrogram'}:
-        raise ValueError('Complete reference models require 2D spectrograms; they are not reduced to Conv1D')
+    dimensions = reference_dimensions(config)
+    if genome.get('reference_dimensions', dimensions) != dimensions:
+        raise ValueError('Reference genome dimensions do not match input modality')
     architecture_id = genome['reference_architecture_id']
-    size = reference_input_size(config, architecture_id)
-    minimum = 299 if architecture_id == 'inception_v3' and config['reference_aux_logits'] else 75 if architecture_id == 'inception_v3' else 224 if architecture_id == 'googlenet' and config['reference_aux_logits'] else 64
-    if architecture_id == 'lenet5':
-        if size != (32, 32):
-            raise ValueError('Complete LeNet-5 requires reference_lenet_input_size=(32, 32)')
-    elif len(size) != 2 or min(size) < minimum:
-        raise ValueError(f'Reference input dimensions for {architecture_id} must be >= {minimum}')
+    if dimensions == 1:
+        minimum = 32 if architecture_id == 'lenet5' else 64
+        if architecture_id == 'inception_v3':
+            minimum = 299 if config['reference_aux_logits'] else 75
+        if int(config['sequence_length']) < minimum:
+            raise ValueError(f'Reference audio input length for {architecture_id} must be >= {minimum}')
+    else:
+        size = reference_input_size(config, architecture_id)
+        minimum = 64
+        if architecture_id == 'inception_v3':
+            minimum = 299 if config['reference_aux_logits'] else 75
+        elif architecture_id == 'googlenet' and config['reference_aux_logits']:
+            minimum = 224
+        if architecture_id == 'lenet5':
+            if size != (32, 32):
+                raise ValueError('Complete LeNet-5 requires reference_lenet_input_size=(32, 32)')
+        elif len(size) != 2 or min(size) < minimum:
+            raise ValueError(f'Reference input dimensions for {architecture_id} must be >= {minimum}')
     limit = config['reference_max_model_parameters']
     if limit is not None and reference_parameter_count(genome, config) > int(limit):
         raise ValueError('Complete architecture exceeds reference_max_model_parameters; it will not be shrunk')

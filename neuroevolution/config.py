@@ -27,12 +27,12 @@ SUPPORTED_METRIC_NAMES = {
 }
 
 VOWELS_INPUTS = {
-    'audio': {'array_directory': 'arrays_audio', 'batch_size': 2, 'pre_fc_pool_length': 64},
-    'spectrogram': {'array_directory': 'arrays', 'batch_size': 8, 'pre_fc_pool_shape': (4, 8)},
+    'audio': {'array_directory': 'arrays_audio', 'batch_size': 256, 'pre_fc_pool_length': 64},
+    'spectrogram': {'array_directory': 'arrays', 'batch_size': 256, 'pre_fc_pool_shape': (4, 8)},
 }
 
 # All experiment choices live here. Change this value to switch input profiles.
-DEFAULT_INPUT_MODALITY = 'spectrogram'
+DEFAULT_INPUT_MODALITY = 'audio'
 DEFAULT_DATASET = 'old_vowels'  # 'old_vowels' or 'vowels_half'
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 REFERENCE_ARCHITECTURE_IDS = (
@@ -385,7 +385,7 @@ def get_default_config(info_path: str = None) -> dict:
         # Use 1 for sequential execution, 5 for five simultaneous folds, or
         # another positive value if GPU memory permits it.
         'fold_parallel_workers': 3,
-        # CUDA evolution starts with one fold and grows within the VRAM budget.
+        # CUDA starts up to fold_parallel_workers folds if VRAM permits, then grows.
         # CPU and explicit fixed mode still use fold_parallel_workers.
         'fold_auto_workers': True,
         'fold_auto_max_workers': 10,
@@ -471,7 +471,8 @@ def get_default_config(info_path: str = None) -> dict:
         # Legacy reduced Conv1D IDs remain loadable, but are not default seeds.
         'architecture_template_seed_fraction': 0.40,
         'architecture_template_mutation_weight': 0.05,
-        'architecture_template_ids': list(REFERENCE_ARCHITECTURE_IDS) if modality == 'spectrogram' else [],
+        # Complete 1D copies for waveforms; original 2D graphs for spectrograms.
+        'architecture_template_ids': list(REFERENCE_ARCHITECTURE_IDS),
         'architecture_template_seed_min_random_fraction': 0.50,
         'architecture_template_max_attempts': 20,
         

@@ -426,7 +426,7 @@ def train_fold_in_thread(genome: dict, fold_num: int, config: dict, device: torc
         device: PyTorch device (CPU or CUDA)
 
     Returns:
-        Tuple of (fold_num, score, model, metrics)
+        Tuple of (fold_num, score, model, metrics). Finished models are on CPU.
     """
     try:
         evolution_config = get_data_phase_config(config, 'evolution')
@@ -502,6 +502,10 @@ def train_fold_in_thread(genome: dict, fold_num: int, config: dict, device: torc
                     loss.backward()
                     optimizer.step()
 
+                # Do not retain the last batch/graph during validation or the
+                # next forward pass. Gradients are not needed between batches.
+                optimizer.zero_grad(set_to_none=True)
+                del output, loss, data, target
                 batch_count += 1
                 if batch_count >= max_batches:
                     break
@@ -534,7 +538,9 @@ def train_fold_in_thread(genome: dict, fold_num: int, config: dict, device: torc
                 best_selection_score = current_selection_score
                 best_selection_metrics = validation_metrics
                 best_epoch = epoch_idx + 1
-                best_state = {k: v.detach().clone() for k, v in model.state_dict().items()}
+                # clone() alone duplicates the model on GPU for every active
+                # fold (and briefly retains both snapshots on replacement).
+                best_state = {k: v.detach().to('cpu', copy=True) for k, v in model.state_dict().items()}
                 patience_left = int(config_value(config, 'epoch_patience'))
             else:
                 patience_left -= 1
@@ -579,6 +585,11 @@ def train_fold_in_thread(genome: dict, fold_num: int, config: dict, device: torc
             f"AUC={metrics['auc']:.2f}%"
         )
 
+        model.zero_grad(set_to_none=True)
+        if device.type == 'cuda':
+            # Futures own their results until consumed. Offload in the worker
+            # so even unconsumed/non-winning folds cannot retain GPU models.
+            model = model.to('cpu')
         return fold_num, metric_value(metrics, fitness_metric), model, metrics
 
     except Exception as e:

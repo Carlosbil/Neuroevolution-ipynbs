@@ -121,9 +121,10 @@ def test_notebook_loads_variable_fold_sizes_and_real_only_global_test(tmp_path):
 
 
 @pytest.mark.parametrize('language', ['es', 'en'])
-def test_report_describes_actual_data_and_selected_epoch(tmp_path, language):
+def test_report_describes_actual_data_and_selected_epoch(tmp_path, language, monkeypatch):
     from scripts.report_winner_scientific import saved_run_descriptions
 
+    monkeypatch.setattr(config_module, 'DEFAULT_INPUT_MODALITY', 'spectrogram')
     config = get_default_config()
     config['data_path'] = str(tmp_path)
     pd.DataFrame({'origin': ['real', 'generated']}).to_csv(tmp_path / 'manifest.csv', index=False)

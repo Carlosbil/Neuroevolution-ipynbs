@@ -54,7 +54,9 @@ def test_legacy_results_keep_their_explicit_activation_setting():
 def test_corrected_winner_pass_has_a_separate_output_directory():
     config = get_winner_replay_config()
     assert config['artifact_dir'] == config['artifacts_dir']
-    assert config['artifacts_dir'].endswith('winner_68e15b97_genome_activations')
+    assert config['artifacts_dir'] != get_default_config()['artifacts_dir']
+    assert config['artifacts_dir'].endswith('_genome_activations')
+    assert 'winner_68e15b97' in config['artifacts_dir']
 
 
 def test_report_reconstructs_saved_run_with_its_training_config(monkeypatch, tmp_path):
@@ -72,5 +74,5 @@ def test_report_reconstructs_saved_run_with_its_training_config(monkeypatch, tmp
     captured = []
     monkeypatch.setattr(report, 'finalize_report', lambda run, results, output, config, settings: captured.append(config))
     report.main()
-    assert captured == [config]
+    assert captured == [json.loads(json.dumps(config))]
     assert get_winner_replay_config()['fc_activation_source'] == 'genome'

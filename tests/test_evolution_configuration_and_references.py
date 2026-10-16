@@ -91,8 +91,10 @@ def test_new_evaluation_recalculates_even_if_stale_parent_cost_is_present(tmp_pa
 
 
 @pytest.mark.parametrize('architecture_id', REFERENCE_ARCHITECTURE_IDS)
-def test_complete_library_is_not_clipped_to_genetic_bounds(architecture_id):
+@pytest.mark.parametrize('modality', ['audio', 'spectrogram'])
+def test_complete_library_is_not_clipped_to_genetic_bounds(architecture_id, modality):
     config = get_default_config()
+    config['input_modality'] = modality
     config.update(max_conv_layers=1, max_filters=8, max_fc_nodes=8, max_model_parameters=100)
     genome = create_template_genome(architecture_id, config)
     with torch.device('meta'):
@@ -116,17 +118,20 @@ def test_vgg16_and_resnet50_keep_original_hidden_layers_and_blocks():
 def test_reference_families_forward_on_spectrograms(architecture_id):
     torch.set_num_threads(1)
     config = get_default_config()
+    config['input_modality'] = 'spectrogram'
     model = EvolvableCNN(create_template_genome(architecture_id, config), config).eval()
     with torch.no_grad():
         assert model(torch.randn(1, 64, 648)).shape == (1, 2)
 
 
 @pytest.mark.parametrize('architecture_id', ['googlenet', 'inception_v3'])
-def test_auxiliary_reference_branches_are_retained_and_trained(architecture_id):
+@pytest.mark.parametrize('modality', ['audio', 'spectrogram'])
+def test_auxiliary_reference_branches_are_retained_and_trained(architecture_id, modality):
     torch.set_num_threads(1)
     config = get_default_config()
+    config['input_modality'] = modality
     model = EvolvableCNN(create_template_genome(architecture_id, config), config).train()
-    logits = model(torch.randn(2, 64, 648))
+    logits = model(torch.randn(2, 1, 512) if modality == 'audio' else torch.randn(2, 64, 648))
     assert model.auxiliary_logits
     loss = classification_loss(model, logits, torch.tensor([0, 1]), nn.CrossEntropyLoss(), config)
     loss.backward()
@@ -205,23 +210,26 @@ def test_failed_checkpoint_save_preserves_previous_weights(monkeypatch, tmp_path
     assert previous.read_bytes() == before
 
 
-def test_real_evolution_trains_complete_network_and_resumes_without_config_mutation(tmp_path):
+@pytest.mark.parametrize('modality', ['audio', 'spectrogram'])
+def test_real_evolution_trains_complete_network_and_resumes_without_config_mutation(tmp_path, modality):
     """Exercise real CPU training, aggregation, reproduction, saving and resume."""
     torch.set_num_threads(1)
     torch.manual_seed(42)
     folder = tmp_path / 'folds'
     folder.mkdir()
     targets = np.array([0, 1] * 4, dtype=np.int64)
-    features = np.random.default_rng(42).normal(size=(8, 16, 32)).astype(np.float32)
+    shape = (8, 1, 64) if modality == 'audio' else (8, 16, 32)
+    features = np.random.default_rng(42).normal(size=shape).astype(np.float32)
     features += (targets * 2 - 1).astype(np.float32)[:, None, None]
     for split in ('train', 'val'):
         np.save(folder / f'X_{split}_fixture_fold_1.npy', features)
         np.save(folder / f'y_{split}_fixture_fold_1.npy', targets)
     config = get_default_config(str(tmp_path / 'run'))
+    config['input_modality'] = modality
     config.update(population_size=6, max_generations=2, fitness_threshold=101,
                   data_path=str(tmp_path), evolution_dataset_id='fixture',
                   evolution_fold_files_subdirectory='folds', num_folds=1,
-                  num_frequency_bins=16, sequence_length=32, pre_fc_pool_shape=(2, 2),
+                  num_frequency_bins=16, sequence_length=shape[-1], pre_fc_pool_shape=(2, 2),
                   min_filters=4, max_filters=4, min_fc_nodes=4, max_fc_nodes=4,
                   max_conv_layers=2, initial_max_conv_layers=1,
                   max_fc_layers=1, num_epochs=2, epoch_patience=2,

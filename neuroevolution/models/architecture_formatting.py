@@ -20,6 +20,8 @@ def _fc_label(num_fc_layers: int) -> str:
 def format_genome_architecture(genome: dict) -> str:
     """Returns a readable one-line architecture description for logs."""
     if genome.get('model_kind') == 'reference':
+        if genome.get('reference_dimensions'):
+            return f"reference, {genome['reference_architecture_id']}, {genome['reference_dimensions']}D, complete"
         return f"reference, {genome['reference_architecture_id']}, complete"
     num_conv_layers = int(genome['num_conv_layers'])
     num_fc_layers = int(genome['num_fc_layers'])

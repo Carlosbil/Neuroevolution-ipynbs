@@ -174,7 +174,33 @@ def test_global_queue_runs_real_cpu_training_and_aggregates(monkeypatch, tmp_pat
     )
 
 
-def test_fold_failure_is_visible_and_stops_evaluation(monkeypatch, tmp_path):
+def test_generation_log_publishes_individuals_before_the_population_finishes(monkeypatch, tmp_path):
+    config = {**get_default_config(str(tmp_path)), 'population_size': 2, 'num_folds': 1}
+    evolution = engine.HybridNeuroevolution(config, torch.device('cpu'))
+    evolution.population = [{'id': f'g{i}', 'optimizer': 'adam', 'learning_rate': 0.001}
+                            for i in range(2)]
+    monkeypatch.setattr(evolution, '_format_architecture', lambda genome: 'tiny')
+
+    def results():
+        for index in range(2):
+            if index:
+                log = (tmp_path / 'generation_progress.txt').read_text(encoding='utf-8')
+                assert 'Individual 1/2 | ID=g0' in log
+                assert 'DETAILED METRICS SUMMARY' not in log
+            metrics = _fold_metrics(75.0)
+            metrics.update({f'{name}_std': 0.0 for name in tuple(metrics)})
+            metrics.update(n_valid_folds=1, parameter_count=2)
+            yield index, 75.0, None, metrics, 1.0, 'trained', None
+
+    monkeypatch.setattr(evolution, '_iter_population_results', results)
+    evolution.evaluate_population()
+    log = (tmp_path / 'generation_progress.txt').read_text(encoding='utf-8')
+    assert log.count('Individual 1/2 | ID=g0') == 1
+    assert 'DETAILED METRICS SUMMARY' in log
+
+
+@pytest.mark.parametrize('memory_failure', [True, False])
+def test_fold_failure_is_visible_and_only_memory_failure_continues(monkeypatch, tmp_path, memory_failure):
     config = get_default_config(info_path=str(tmp_path))
     config.update({'population_size': 2, 'num_folds': 1, 'fold_parallel_workers': 1})
     evolution = engine.HybridNeuroevolution(config, torch.device('cpu'))
@@ -184,12 +210,22 @@ def test_fold_failure_is_visible_and_stops_evaluation(monkeypatch, tmp_path):
     ]
 
     def fail_fold(*args):
-        raise torch.cuda.OutOfMemoryError('simulated OOM')
+        if memory_failure:
+            raise torch.cuda.OutOfMemoryError('simulated OOM')
+        raise RuntimeError('unexpected failure')
 
     monkeypatch.setattr(engine, 'train_fold_in_thread', fail_fold)
-    with pytest.raises(torch.cuda.OutOfMemoryError, match='simulated OOM'):
+    monkeypatch.setattr(engine, 'estimate_genome_parameter_count', lambda *args: 1)
+    monkeypatch.setattr(engine.HybridNeuroevolution, '_format_architecture', lambda *args: 'tiny')
+    if memory_failure:
         evolution.evaluate_population()
+        assert all(genome['fitness'] == 0.0 for genome in evolution.population)
+    else:
+        with pytest.raises(RuntimeError, match='unexpected failure'):
+            evolution.evaluate_population()
 
     progress = json.loads((tmp_path / 'fold_progress.json').read_text(encoding='utf-8'))
-    assert progress['individuals']['1:g1']['status'] == 'failed'
+    assert progress['individuals']['1:g1']['status'] == (
+        'completed_with_failed_folds' if memory_failure else 'failed'
+    )
     assert progress['individuals']['1:g1']['folds']['1']['status'] == 'failed'

@@ -247,7 +247,7 @@ def _evaluate_single_fold_legacy(
         if current_selection_score > (best_selection_score + improvement_threshold):
             best_selection_score = current_selection_score
             best_selection_metrics = validation_metrics
-            best_model_state = {k: v.clone() for k, v in model.state_dict().items()}
+            best_model_state = {k: v.detach().to('cpu', copy=True) for k, v in model.state_dict().items()}
             best_epoch = epoch
             print(
                 f"   Época {epoch}/{num_epochs}: loss={avg_loss:.4f}, "
@@ -400,6 +400,8 @@ def evaluate_single_fold(
             scaler.update()
 
             running_loss += loss.item()
+            optimizer.zero_grad(set_to_none=True)
+            del output, loss, data, target
             batch_count += 1
             limit = config_value(config, 'max_batches_per_epoch')
             if limit is not None and batch_count >= int(limit):
@@ -415,7 +417,7 @@ def evaluate_single_fold(
         if current_score > (best_selection_score + improvement_threshold):
             best_selection_score = current_score
             best_selection_metrics = validation_metrics
-            best_model_state = {k: v.detach().clone() for k, v in model.state_dict().items()}
+            best_model_state = {k: v.detach().to('cpu', copy=True) for k, v in model.state_dict().items()}
             best_epoch = epoch
             print(
                 f"   Época {epoch}/{num_epochs}: loss={avg_loss:.4f}, "

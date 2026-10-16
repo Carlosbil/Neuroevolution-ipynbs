@@ -225,7 +225,7 @@ Todos los ajustes del experimento se editan en `neuroevolution/config.py`. `test
 
 El selector `DEFAULT_DATASET = 'old_vowels'` activa `artifacts/old_vowels_dataset`, preparado por `old_vowels_dataset_por_persona.ipynb`. Incluye audios reales y generados de 0,48 s a 24 kHz: train tiene 8.609 audios, val 1.230 y test únicamente 60 reales. Se han quitado los 2.399 generados de las personas de test. Cada persona mantiene juntos sus reales y generados en cada partición y fold.
 
-Cambia `DEFAULT_INPUT_MODALITY` en ese archivo: `spectrogram` es el perfil predeterminado, con entrada de 64 × 44, batch 8 y directorio `arrays`. El perfil `audio` usa ondas de 11.520 muestras, batch 2 y `arrays_audio`; las referencias 2D completas requieren espectrogramas. Los resultados van a `artifacts/test_old_vowels_<modalidad>`. `DEFAULT_DATASET = 'vowels_half'` permite volver al dataset de 3,5 s y a su directorio de resultados propio. Reinicia el kernel después de cambiar los selectores. Consulta [la guía del dataset old](docs/old_vowels_dataset.md).
+Cambia `DEFAULT_INPUT_MODALITY` en ese archivo: `audio` es el perfil predeterminado, con ondas de 11.520 muestras y directorio `arrays_audio`. El perfil `spectrogram` usa entradas de 64 × 44 y `arrays`. Ambos perfiles tienen batch 256 y referencias conocidas habilitadas: copias 1D para audio y grafos 2D para espectrogramas. Los resultados van a `artifacts/test_old_vowels_<modalidad>`. `DEFAULT_DATASET = 'vowels_half'` permite volver al dataset de 3,5 s y a su directorio de resultados propio. Reinicia el kernel después de cambiar los selectores. Consulta [la guía del dataset old](docs/old_vowels_dataset.md).
 
 | Ajuste | Valor inicial | Propósito |
 | --- | --- | --- |
@@ -240,8 +240,8 @@ Cambia `DEFAULT_INPUT_MODALITY` en ese archivo: `spectrogram` es el perfil prede
 | `reference_injection_fraction` | 0.10 | Recorrer todas las referencias durante la búsqueda |
 | `num_epochs` / `epoch_patience` | 100 / 25 | Entrenar cada fold con selección por validación |
 | `early_stopping_generations` | 30 | Contar estancamiento una vez por generación evaluada |
-| `fold_parallel_workers` | 3 | Concurrencia fija en CPU o con modo automático desactivado |
-| `fold_auto_workers` / `fold_auto_max_workers` | `True` / 10 | En CUDA, empezar con un fold y añadir hasta 10 según la VRAM |
+| `fold_parallel_workers` | 3 | Concurrencia inicial en CUDA automático; fija en CPU o con modo automático desactivado |
+| `fold_auto_workers` / `fold_auto_max_workers` | `True` / 10 | En CUDA, añadir hasta 10 folds según la VRAM |
 | `fold_vram_reserve_gib` / `fold_vram_reserve_fraction` | 2 GiB / 0.10 | Reservar el mayor de 2 GiB o el 10% de la VRAM total |
 | `fold_auto_growth_interval_s` | 30 | Añadir como máximo un fold cada 30 segundos |
 | `fold_oom_max_retries` | 2 | Reintentar un fold con menos concurrencia si falla la memoria |
@@ -256,6 +256,26 @@ Los optimizadores, sus rangos de learning rate y sus parámetros (`weight_decay`
 El registro incluye **37 referencias**: LeNet-5; AlexNet; VGG-11/13/16/19 y sus variantes BN; ResNet-18/34/50/101/152; Wide ResNet-50-2/101-2; ResNeXt-50-32×4d/101-32×8d; GoogLeNet; Inception-v3; DenseNet-121/161/169/201; MobileNet-v2/v3-large; EfficientNet-B0–B7; SqueezeNet-1.0/1.1.
 
 Se construyen desde cero con las implementaciones completas de Torchvision, conservando bloques, anchuras, capas densas y ramas auxiliares. LeNet-5 conserva C1/S2/C3/S4/C5/F6, incluidas las conexiones parciales de C3 y el subsampling entrenable. Para la tarea se adapta la entrada a un canal y la salida a dos clases; en LeNet se sustituye la salida RBF de dígitos por un clasificador entrenable. Se redimensiona el espectrograma según el config: 32 × 32 para LeNet, 299 × 299 para Inception-v3, 224 × 224 para las demás y las resoluciones 224–600 para EfficientNet-B0–B7. Las referencias completas recombinan y mutan sus hiperparámetros o cambian de arquitectura completa; los operadores no cortan arbitrariamente su grafo.
+
+Para `audio`, `reference_architectures_1d.py` genera una copia temporal de cada
+grafo: convoluciones, pooling y BatchNorm pasan a 1D, conservando canales,
+grupos, profundidad, conexiones residuales/densas, ramas Inception y sus
+clasificadores auxiliares. Los kernels cuadrados pasan de k×k a longitud k;
+los factorizados 1×k y k×1 se convierten en convoluciones temporales independientes
+de longitud k. Las cuadrículas de pooling adaptativo pasan a intervalos temporales;
+se adapta la entrada de la primera capa densa, manteniendo sus neuronas ocultas.
+LeNet usa pooling temporal global después de C5 para aceptar ondas de longitud
+variable. Se procesa directamente `(batch, canales, muestras)`, sin convertir
+la onda en imagen ni reducirla a 224 muestras. Son adaptaciones 1D inicializadas
+desde cero, sin pesos preentrenados 2D. La construcción usa un grafo meta para
+evitar reservar primero los pesos 2D en RAM.
+
+Los logs muestran, por ejemplo, `reference, googlenet, 1D, complete`; el genoma
+guarda `reference_dimensions` para distinguir modelos y checkpoints 1D/2D.
+Con población 20 y fracción inicial 0.40 se siembran siete referencias, incluida
+GoogLeNet, más las CNN aleatorias. Al reanudar una población anterior se conserva
+su progreso y se introducen referencias en generaciones posteriores mediante
+`reference_injection_fraction` (dos por generación con los valores actuales).
 
 Las antiguas plantillas reducidas `*_small`/`*_medium` siguen disponibles para compatibilidad, pero no son las semillas predeterminadas. El informe de una referencia muestra su grafo real. Consulta las [implementaciones de Torchvision](https://docs.pytorch.org/vision/stable/models.html), las [resoluciones de EfficientNet](https://docs.pytorch.org/vision/2.0/_modules/torchvision/models/efficientnet.html) y el [artículo de LeNet-5](https://bottou.org/papers/lecun-98h).
 
@@ -410,19 +430,41 @@ Configurable mediante los selectores `evolution_*` y `final_*` en CONFIG.
 
 3. **Memoria GPU**: La cola de evolución en CUDA ajusta la concurrencia automáticamente.
    Consulta la VRAM libre del dispositivo CUDA seleccionado (también su partición MIG),
-   empieza con un fold y aumenta de uno en uno cuando queda margen para otro fold
-   además de la reserva. Usa una estimación inicial de 4 GiB por fold y eleva esa
-   estimación según la memoria observada, con un factor de seguridad de 1.5.
+   empieza con hasta `fold_parallel_workers` folds si caben y aumenta de uno en uno
+   cuando queda margen para otro fold además de la reserva. Presupuesta también
+   los folds que están arrancando y aún no han completado su primera época.
+   Usa una estimación inicial de 4 GiB por fold y la memoria observada durante
+   los últimos 60 segundos, con un factor de seguridad de 1.5.
    La reserva es preventiva: las arquitecturas cambian y pueden tener picos mayores.
    Si ocurre un OOM o el fallo de NVML del allocator, deja terminar los folds activos,
-   libera caché sin tensores activos y reintenta el fold con un límite menor durante
-   el resto de la generación. Si agota los reintentos, detiene la evaluación y guarda
-   el error, sin convertirlo en fitness cero. Los errores ajenos a memoria mantienen
+   libera caché y reintenta el fold con un límite menor. Puede volver a crecer
+   tras una espera de al menos 30 segundos (o dos intervalos de crecimiento)
+   si la memoria lo permite. Si agota los reintentos, registra el error y asigna
+   0% al fold, y la evolución continúa. Con concurrencia fija se asigna 0% directamente.
+   Con `require_all_folds=True` (por defecto), un fold fallido deja en cero el fitness
+   del individuo. Los errores ajenos a memoria mantienen
    su tratamiento anterior. La telemetría se guarda en `fold_progress.json` y los
    cambios de concurrencia aparecen en el log. Estas opciones se aplican a la cola
    global del motor evolutivo, no a la evaluación final ni al replay del ganador.
    Para concurrencia fija, usa `fold_auto_workers=False` y `fold_parallel_workers=N`.
+   Las copias de los mejores pesos y los modelos de folds terminados se guardan
+   en CPU; los futuros pendientes de procesar no conservan modelos en GPU.
+   Los datasets cacheados también están en CPU. PyTorch puede conservar VRAM
+   reservada para reutilizarla: `reserved_vram_bytes` incluye esa caché y
+   `allocated_vram_bytes` mide los tensores vivos. No se vacía la caché después
+   de cada fold; tras un error de memoria se hace cuando terminan los folds activos.
+   Mientras espera a esos folds, el estado es `draining_after_memory_error`:
+   siguen actualizándose la VRAM y el tiempo de cooldown. Los mensajes periódicos
+   muestran el ID, fold y época de los entrenamientos activos. La cola espera a
+   que terminen antes de liberar caché y reintentar; superar el cooldown no
+   interrumpe un fold que sigue entrenando. `generation_progress.txt` registra
+   cada individuo cuando finalizan sus cinco folds; `fold_progress.json` permite
+   seguir las épocas antes de que haya resultados completos por individuo.
    Si un fold aislado no cabe, reduce `batch_size` o utiliza una partición MIG mayor.
+   El perfil de audio usa `batch_size=256`. Usar 2
+   multiplica aproximadamente por 128 los lotes de cada época y puede dejar gran
+   parte de la VRAM libre sin mejorar el rendimiento. La cola registra el tamaño
+   de lote efectivo, las épocas, la paciencia y AMP al comenzar cada generación.
 
 4. **Logs detallados**: Todo `print()` se guarda en `execution_log.txt`. Revisar ahí si falla evolution.
 

@@ -126,9 +126,10 @@ def test_default_config_uses_configured_vowels_source_for_both_protocol_phases()
     final_config = get_data_phase_config(config, "final_evaluation")
 
     assert evolution_config["dataset_id"] == "old_vowels"
-    assert evolution_config["fold_files_subdirectory"] == "arrays"
+    expected_directory = 'arrays_audio' if config['input_modality'] == 'audio' else 'arrays'
+    assert evolution_config["fold_files_subdirectory"] == expected_directory
     assert final_config["dataset_id"] == "old_vowels"
-    assert final_config["fold_files_subdirectory"] == "arrays"
+    assert final_config["fold_files_subdirectory"] == expected_directory
 
 
 def test_final_evaluation_loads_real_source_even_when_active_source_is_synthetic(monkeypatch, tmp_path):

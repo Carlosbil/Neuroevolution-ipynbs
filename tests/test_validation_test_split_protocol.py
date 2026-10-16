@@ -212,7 +212,7 @@ def test_final_evaluation_reports_test_metrics_after_validation_selection(monkey
         def __init__(self, params, lr):
             self.params = list(params)
 
-        def zero_grad(self):
+        def zero_grad(self, set_to_none=True):
             for param in self.params:
                 param.grad = None
 

@@ -180,7 +180,7 @@ def get_configured_templates(config: dict) -> List[ArchitectureTemplate]:
     """Returns configured templates in configured order after validation."""
     template_ids = config.get("architecture_template_ids", DEFAULT_TEMPLATE_IDS)
     templates = [get_template(template_id) for template_id in template_ids]
-    return [template for template in templates if template.model_kind != 'reference' or str(config.get('input_modality', 'audio')).lower() in {'image', 'spectrogram'}]
+    return templates
 
 
 def _cap_from_config(config: dict, current_key: str, maximum_key: str) -> int:
@@ -239,6 +239,7 @@ def _template_base_genome(template: ArchitectureTemplate, config: dict) -> dict:
     if template.model_kind == 'reference':
         return {
             'model_kind': 'reference', 'reference_architecture_id': template.template_id,
+            'reference_dimensions': 1 if str(config.get('input_modality', 'audio')).lower() == 'audio' else 2,
             'num_conv_layers': 0, 'num_fc_layers': 0, 'filters': [], 'kernel_sizes': [],
             'fc_nodes': [], 'activations': [], 'normalization_type': 'native',
             'conv_topology': 'reference', 'dropout_rate': config_value(config, 'reference_dropout_rate'),
