@@ -238,6 +238,7 @@ def standalone_final_dataset(tmp_path, monkeypatch):
 
 def test_final_cell_runs_real_training_from_empty_kernel_and_saves_results(tmp_path, monkeypatch):
     import torch
+    import matplotlib.pyplot as plt
     config, genome = standalone_final_dataset(tmp_path, monkeypatch)
     namespace = {}
     previous_threads = torch.get_num_threads()
@@ -249,8 +250,9 @@ def test_final_cell_runs_real_training_from_empty_kernel_and_saves_results(tmp_p
     assert {key: namespace['best_genome'][key] for key in genome} == genome
     result = namespace['final_test_results']
     assert result['n_samples'] == 60
-    assert result['best_epoch'] == 1
-    assert result['protocol'] == 'single_global_person_held_out_test'
+    assert result['n_runs'] == 5
+    assert all(run['best_epoch'] == 1 for run in result['run_results'])
+    assert result['protocol'] == 'repeated_global_person_held_out_test'
     assert result['train_people'] == 70
     assert result['validation_people'] == 10
     assert result['test_people'] == 20
@@ -263,11 +265,37 @@ def test_final_cell_runs_real_training_from_empty_kernel_and_saves_results(tmp_p
     assert saved['n_samples'] == result['n_samples']
     assert saved['f1_score'] == result['f1_score']
     assert saved['confusion_matrix'] == result['confusion_matrix']
-    assert saved['best_selection_metrics']['confusion_matrix'] == result['best_selection_metrics']['confusion_matrix'].tolist()
+    assert len(saved['run_results']) == 5
+    for index, run in enumerate(result['run_results'], start=1):
+        saved_run = json.loads((tmp_path / f'old_vowels_final_test_run_{index}.json').read_text())
+        assert saved_run == saved['run_results'][index - 1]
+        assert saved_run['best_selection_metrics']['confusion_matrix'] == run['best_selection_metrics']['confusion_matrix'].tolist()
+        assert len(saved_run['audio_predictions']) == 60
+        assert len({audio['person_id'] for audio in saved_run['audio_predictions']}) == 20
     assert namespace['ARRAY_ROOT'] == Path(config['data_path']) / 'arrays_audio'
+    # Recover the saved runs in an empty namespace; the last cell must not retrain.
+    from neuroevolution.evaluation import cross_validation
+    monkeypatch.setattr(cross_validation, 'evaluate_single_fold', lambda *args, **kwargs: pytest.fail('No retraining'))
+    monkeypatch.setattr(plt, 'show', lambda: None)
+    restored = {'FINAL_RESULTS_PATH': str(saved_path)}
+    try:
+        exec(''.join(notebook()['cells'][-1]['source']), restored)
+        comparison = restored['person_comparison']
+        assert comparison['n_runs'] == 5
+        assert comparison['n_people'] == 20 and comparison['n_audios'] == 60
+        for original, compared in zip(saved['run_results'], comparison['run_results']):
+            for metric in ('accuracy', 'sensitivity', 'specificity', 'f1_score', 'auc'):
+                assert compared['audio_metrics'][metric] == pytest.approx(original[metric])
+            assert len(compared['people']) == 20
+            assert compared['person_metrics']['n_samples'] == 20
+        assert len(restored['person_results_table']) == 100
+        assert json.loads(restored['person_comparison_path'].read_text(encoding='utf-8')) == comparison
+        assert len(restored['person_details_path'].read_text(encoding='utf-8').splitlines()) == 101
+    finally:
+        plt.close('all')
 
 
-def test_final_cell_trains_once_without_importing_cv_backend(tmp_path, monkeypatch):
+def test_final_cell_trains_five_times_without_importing_cv_backend(tmp_path, monkeypatch):
     import builtins
     import torch
     from neuroevolution.evaluation import cross_validation
@@ -292,14 +320,78 @@ def test_final_cell_trains_once_without_importing_cv_backend(tmp_path, monkeypat
         exec(''.join(notebook()['cells'][19]['source']), namespace)
     finally:
         torch.set_num_threads(previous_threads)
-    assert calls == [(140, 10, 60)]
+    assert calls == [(140, 10, 60)] * 5
     result = namespace['final_test_results']
     assert namespace['best_genome']['id'] == genome['id']
-    assert result['protocol'] == 'single_global_person_held_out_test'
+    assert result['protocol'] == 'repeated_global_person_held_out_test'
     assert result['n_samples'] == 60
     assert 'cv_oof_metrics' not in result
     assert not (tmp_path / 'final_cv_standalone').exists()
     assert (tmp_path / 'old_vowels_final_test.json').is_file()
+
+
+def test_five_run_summary_uses_distinct_seeds_and_sample_standard_deviation(tmp_path, monkeypatch, capsys):
+    import random
+    import numpy as np
+    import matplotlib.pyplot as plt
+    from neuroevolution.evaluation import cross_validation
+
+    config, genome = standalone_final_dataset(tmp_path, monkeypatch)
+    calls = []
+    metrics = ('accuracy', 'sensitivity', 'specificity', 'f1_score', 'auc')
+
+    def train(best_genome, run_config, train_loader, val_loader, test_loader, **kwargs):
+        calls.append((run_config['seed'], random.random(),
+                      tuple(id(loader) for loader in (train_loader, val_loader, test_loader))))
+        assert best_genome == genome
+        value = 50 + 10 * len(calls)
+        return dict.fromkeys(metrics, value) | {
+            'fold': 1, 'n_samples': 60, 'best_epoch': len(calls),
+            'confusion_matrix': np.array([[len(calls), 30 - len(calls)], [0, 30]]),
+            'test_predictions': {
+                'y_true': test_loader.dataset.tensors[1].tolist(),
+                'y_pred': test_loader.dataset.tensors[1].tolist(),
+                'y_prob': test_loader.dataset.tensors[1].tolist(),
+            },
+        }
+
+    monkeypatch.setattr(cross_validation, 'evaluate_single_fold', train)
+    namespace = {}
+    source = ''.join(notebook()['cells'][19]['source'])
+    exec(source, namespace)
+    result = namespace['final_test_results']
+    seeds = [config['seed'] + index for index in range(5)]
+    assert [call[0] for call in calls] == seeds
+    assert [call[1] for call in calls] == [random.Random(seed).random() for seed in seeds]
+    assert len({call[2] for call in calls}) == 1
+    assert namespace['CONFIG']['seed'] == config['seed']
+    assert result['seeds'] == seeds and result['std_ddof'] == 1
+    for metric in metrics:
+        assert result[metric] == 80
+        assert result[f'std_{metric}'] == pytest.approx(np.std([60, 70, 80, 90, 100], ddof=1))
+        assert result['metrics_summary'][metric]['values'] == [60, 70, 80, 90, 100]
+    assert result['confusion_matrix'] == [[3, 27], [0, 30]]
+    assert result['confusion_matrix_aggregation'] == 'mean_over_runs'
+    assert [run['run'] for run in result['run_results']] == [1, 2, 3, 4, 5]
+    assert all(run['protocol'] == 'single_global_person_held_out_test' for run in result['run_results'])
+    saved = json.loads((tmp_path / 'old_vowels_final_test.json').read_text())
+    assert saved == result
+    # Repeating the standalone cell reproduces the seed sequence and aggregate.
+    calls.clear()
+    exec(source, {})
+    assert json.loads((tmp_path / 'old_vowels_final_test.json').read_text()) == result
+
+    # The results cell can recover and show all five runs from an empty kernel.
+    monkeypatch.setattr(plt, 'show', lambda: None)
+    restored = {}
+    try:
+        exec(''.join(notebook()['cells'][20]['source']), restored)
+        assert restored['final_test_results'] == saved
+        assert restored['matrix'].tolist() == [[3, 27], [0, 30]]
+        assert 'Matriz media de 5 entrenamientos' in restored['ax'].get_title()
+        assert '80.00% ± 15.81%' in capsys.readouterr().out
+    finally:
+        plt.close('all')
 
 
 def test_results_cell_runs_from_empty_kernel_using_saved_json(tmp_path, monkeypatch):
@@ -325,6 +417,7 @@ def test_final_cell_relocates_dataset_after_moving_experiment(tmp_path, monkeypa
     monkeypatch.setattr(cross_validation, 'evaluate_single_fold', lambda *args, **kwargs: {
         'fold': 1, 'accuracy': 75, 'sensitivity': 75, 'specificity': 75,
         'f1_score': 75, 'auc': 75, 'n_samples': 60, 'confusion_matrix': [[20, 10], [5, 25]],
+        'test_predictions': {key: args[4].dataset.tensors[1].tolist() for key in ('y_true', 'y_pred', 'y_prob')},
     })
     progress_path = tmp_path / 'evolution_progress.json'
     progress = json.loads(progress_path.read_text())
@@ -343,3 +436,126 @@ def test_all_notebook_code_cells_compile():
     for index, cell in enumerate(notebook()['cells']):
         if cell['cell_type'] == 'code':
             compile(''.join(cell['source']), f'<test.ipynb cell {index}>', 'exec')
+
+
+def test_final_cell_reloads_a_cached_evaluator_before_loading_data(tmp_path, monkeypatch):
+    import importlib
+    from neuroevolution.evaluation import cross_validation
+
+    standalone_experiment(tmp_path, monkeypatch, checkpoint=False)
+
+    def old_evaluator(best_genome, config, train, validation, test, fold_num, device, num_epochs=None):
+        pytest.fail('An obsolete evaluator must never start training')
+
+    monkeypatch.setattr(cross_validation, 'evaluate_single_fold', old_evaluator)
+    original_reload = importlib.reload
+    reloads = []
+
+    def reload_backend(module):
+        reloads.append(module)
+        return original_reload(module)
+
+    monkeypatch.setattr(importlib, 'reload', reload_backend)
+    namespace = {}
+    prefix = ''.join(notebook()['cells'][19]['source']).split('# Recuperar también')[0]
+    exec(prefix, namespace)
+    assert reloads == [cross_validation]
+    assert namespace['evaluate_single_fold'] is not old_evaluator
+    assert namespace['_supports_prediction_output'](namespace['evaluate_single_fold'])
+    assert 'final_train_loader' not in namespace
+
+
+def test_final_cell_rejects_an_old_package_on_disk_before_training(tmp_path, monkeypatch):
+    import importlib
+    from neuroevolution.evaluation import cross_validation
+
+    standalone_experiment(tmp_path, monkeypatch, checkpoint=False)
+    calls = []
+
+    def old_evaluator(best_genome, config, train, validation, test, fold_num, device, num_epochs=None):
+        calls.append(True)
+        return {'accuracy': 100}
+
+    monkeypatch.setattr(cross_validation, 'evaluate_single_fold', old_evaluator)
+    # Reloading still finds the old implementation when the package on disk was not replaced.
+    monkeypatch.setattr(importlib, 'reload', lambda module: module)
+    namespace = {}
+    with pytest.raises(RuntimeError, match='no admite return_predictions') as error:
+        exec(''.join(notebook()['cells'][19]['source']), namespace)
+    assert str(cross_validation.__file__) in str(error.value)
+    assert not calls
+    assert 'final_train_loader' not in namespace
+
+
+def test_distributed_zip_contains_current_python_sources():
+    from zipfile import ZipFile
+
+    root = Path(__file__).resolve().parents[1]
+    with ZipFile(root / 'neuroevolution.zip') as archive:
+        assert archive.testzip() is None
+        for path in (root / 'neuroevolution').rglob('*.py'):
+            assert archive.read(path.relative_to(root).as_posix()) == path.read_bytes(), str(path)
+
+
+def test_blocks_six_onwards_run_in_fresh_processes_from_distributed_zip(tmp_path, monkeypatch):
+    import os
+    import subprocess
+    import sys
+    from zipfile import ZipFile
+
+    import torch
+    from neuroevolution.models.evolvable_cnn import EvolvableCNN
+
+    root = Path(__file__).resolve().parents[1]
+    runtime = tmp_path / 'distributed'
+    runtime.mkdir()
+    with ZipFile(root / 'neuroevolution.zip') as archive:
+        archive.extractall(runtime)
+    experiment = tmp_path / 'experiment'
+    experiment.mkdir()
+    config, genome = standalone_final_dataset(experiment, monkeypatch)
+    torch.save({'genome': genome, 'config': config,
+                'model_state_dict': EvolvableCNN(genome, config).state_dict()},
+               experiment / 'best_model_gen4_idstandalone_fitness78.00.pth')
+    script = '''
+import json
+import sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+import neuroevolution
+from neuroevolution.evaluation import person_level
+assert str(Path(sys.argv[1]).resolve()) in neuroevolution.__file__
+assert str(Path(sys.argv[1]).resolve()) in person_level.__file__
+import torch
+import matplotlib.pyplot as plt
+torch.set_num_threads(1)
+plt.show = lambda: None
+notebook = json.loads(Path(sys.argv[2]).read_text(encoding='utf-8'))
+experiment = Path(sys.argv[3])
+index = int(sys.argv[4])
+namespace = {
+    'EVOLUTION_PROGRESS_PATH': str(experiment / 'evolution_progress.json'),
+    'FINAL_RESULTS_PATH': str(experiment / 'old_vowels_final_test.json'),
+    'FINAL_EVALUATION_DEVICE': 'cpu',
+}
+exec(''.join(notebook['cells'][index]['source']), namespace)
+if index == 15:
+    assert namespace['best_genome']['id'] == 'standalone'
+elif index == 17:
+    assert namespace['loaded_model'] is not None
+elif index in (19, 20):
+    assert namespace['final_test_results']['n_runs'] == 5
+    assert len(namespace['final_test_results']['run_results'][0]['audio_predictions']) == 60
+elif index == 23:
+    assert namespace['person_comparison']['n_people'] == 20
+    assert namespace['person_comparison']['n_runs'] == 5
+plt.close('all')
+'''
+    environment = dict(os.environ, MPLBACKEND='Agg', PYTHONIOENCODING='utf-8')
+    for index in (15, 17, 19, 20, 23):
+        # Each subprocess starts a fresh interpreter. Only saved files carry over.
+        result = subprocess.run(
+            [sys.executable, '-c', script, str(runtime), str(root / 'test.ipynb'), str(experiment), str(index)],
+            cwd=runtime, env=environment, capture_output=True, text=True, encoding='utf-8', timeout=90,
+        )
+        assert result.returncode == 0, f'Cell {index}:\n{result.stdout}\n{result.stderr}'

@@ -229,19 +229,21 @@ Cambia `DEFAULT_INPUT_MODALITY` en ese archivo: `audio` es el perfil predetermin
 
 | Ajuste | Valor inicial | Propósito |
 | --- | --- | --- |
-| `population_size` / `max_generations` | 20 / 100 | Ampliar candidatos y horizonte de búsqueda |
+| `population_size` / `max_generations` | 10 / 100 | Evaluar diez individuos por generación |
 | `selection_strategy` | `fitness` | Priorizar F1; Pareto sigue disponible |
 | `elite_percentage` | 0.10 | Conservar al mejor y dejar espacio a descendientes |
-| `base_mutation_rate` / límites | 0.20 / 0.05–0.50 | Subir mutación cuando falta diversidad o mejora |
+| `base_mutation_rate` / límites | 0.15 / 0.05–0.30 | Mutación moderada con adaptación por diversidad |
+| `mutation_stagnation_boost` | 0.05 | Aumento máximo por estancamiento |
 | `crossover_rate` | 0.85 | Recombinación y conservación ocasional de padres |
-| `speciation_enabled` | `True` | Seleccionar padres entre familias diferentes |
-| `random_immigrant_fraction` | 0.10 | Introducir candidatos nuevos en cada generación |
-| `architecture_template_seed_fraction` | 0.40 | Sembrar la población con referencias completas |
-| `reference_injection_fraction` | 0.10 | Recorrer todas las referencias durante la búsqueda |
+| `speciation_enabled` | `True` | Favorecer cruces dentro de especies con padres distintos |
+| `random_immigrant_fraction` | 0.05 | Fracción de inmigración aleatoria; con población 10 se redondea a cero |
+| `architecture_template_seed_fraction` / `architecture_template_mutation_weight` | 0.0 / 0.0 | Concentrar la entrada de referencias en las inyecciones |
+| `reference_injection_schedule` | `[(0, 0.0), (10, 0.10), (20, 0.20)]` | Introducir referencias progresivamente |
+| `reference_injection_fraction` | 0.10 | Fracción constante si el calendario se pone en `None` |
 | `num_epochs` / `epoch_patience` | 100 / 25 | Entrenar cada fold con selección por validación |
 | `early_stopping_generations` | 30 | Contar estancamiento una vez por generación evaluada |
-| `fold_parallel_workers` | 3 | Concurrencia inicial en CUDA automático; fija en CPU o con modo automático desactivado |
-| `fold_auto_workers` / `fold_auto_max_workers` | `True` / 10 | En CUDA, añadir hasta 10 folds según la VRAM |
+| `fold_parallel_workers` | 3 | Concurrencia inicial en CUDA, limitada por la VRAM disponible |
+| `fold_auto_workers` / `fold_auto_max_workers` | `True` / 10 | Aumentar la concurrencia automáticamente hasta diez folds según la VRAM |
 | `fold_vram_reserve_gib` / `fold_vram_reserve_fraction` | 2 GiB / 0.10 | Reservar el mayor de 2 GiB o el 10% de la VRAM total |
 | `fold_auto_growth_interval_s` | 30 | Añadir como máximo un fold cada 30 segundos |
 | `fold_oom_max_retries` | 2 | Reintentar un fold con menos concurrencia si falla la memoria |
@@ -250,6 +252,12 @@ Cambia `DEFAULT_INPUT_MODALITY` en ese archivo: `audio` es el perfil predetermin
 | `resume_evolution` | `True` | Reanudar automáticamente el progreso del experimento |
 
 Los optimizadores, sus rangos de learning rate y sus parámetros (`weight_decay`, `momentum`, etc.) también viven en el config. Los límites de la búsqueda de CNN propias son 11 capas convolucionales, 4 capas densas y 20 millones de parámetros. Las referencias tienen su propio límite, 150 millones; nunca se recortan para ajustarlas a los límites de las CNN propias.
+
+Las generaciones se cuentan desde cero. Con población 10, G0–G9 solo crean CNN personalizadas; G10–G19 reciben una referencia nueva por generación y desde G20 reciben dos. La cuota se calcula con `int(population_size * fracción)` y se limita a las plazas disponibles tras élites e inmigrantes, reservando una para la sonda de crecimiento. Para otras poblaciones pequeñas puede redondearse a cero. Las inyecciones recorren `architecture_template_ids` de forma circular: por defecto GoogLeNet, EfficientNet-B0, ResNet18, MobileNet-V3-Large y VGG13-BN. El registro completo sigue disponible para cambiar esa lista.
+
+Mientras hay calendario, los operadores desactivan las conversiones a plantillas por mutación y la población inicial usa la cuota de G0, evitando otras entradas fuera de lo programado. Las referencias introducidas pueden sobrevivir y tener descendientes: la cuota no limita su presencia total. Si una especie no ofrece otro padre, se busca pareja en el resto de la población.
+
+Con `resume_evolution=True`, se conservan población, élites, generación y posición del recorrido de referencias; el calendario continúa en la generación absoluta guardada. Si cambian los ajustes de mutación, se recalcula la tasa adaptativa y se aplican sus nuevos límites. Para observar el arranque sin referencias, usa un `artifacts_dir` nuevo: reanudar una ejecución previa conserva sus referencias. Reinicia el kernel para cargar los cambios de código y configuración. Los ajustes son un ensayo de búsqueda; la mejora del fitness requiere comprobarse con nuevas evaluaciones.
 
 ### Arquitecturas completas
 
@@ -272,10 +280,10 @@ evitar reservar primero los pesos 2D en RAM.
 
 Los logs muestran, por ejemplo, `reference, googlenet, 1D, complete`; el genoma
 guarda `reference_dimensions` para distinguir modelos y checkpoints 1D/2D.
-Con población 20 y fracción inicial 0.40 se siembran siete referencias, incluida
-GoogLeNet, más las CNN aleatorias. Al reanudar una población anterior se conserva
-su progreso y se introducen referencias en generaciones posteriores mediante
-`reference_injection_fraction` (dos por generación con los valores actuales).
+Con población 10, el calendario predeterminado reserva G0–G9 para CNN propias,
+introduce GoogLeNet en G10 y continúa el recorrido de familias con una inyección
+por generación hasta G19 y dos desde G20. Al reanudar se conserva la población
+existente y se aplica la etapa de `reference_injection_schedule` correspondiente.
 
 Las antiguas plantillas reducidas `*_small`/`*_medium` siguen disponibles para compatibilidad, pero no son las semillas predeterminadas. El informe de una referencia muestra su grafo real. Consulta las [implementaciones de Torchvision](https://docs.pytorch.org/vision/stable/models.html), las [resoluciones de EfficientNet](https://docs.pytorch.org/vision/2.0/_modules/torchvision/models/efficientnet.html) y el [artículo de LeNet-5](https://bottou.org/papers/lecun-98h).
 
@@ -428,7 +436,8 @@ Configurable mediante los selectores `evolution_*` y `final_*` en CONFIG.
 
 2. **Checkpointing**: El mejor modelo se guarda dinámicamente según F1-score de validación. Interrumpir (Ctrl+C) es seguro—el mejor hasta ese momento está en `.pth`.
 
-3. **Memoria GPU**: La cola de evolución en CUDA ajusta la concurrencia automáticamente.
+3. **Memoria GPU**: La cola de evolución en CUDA ajusta la concurrencia automáticamente,
+   con `fold_auto_workers=True`, hasta `fold_auto_max_workers=10` folds.
    Consulta la VRAM libre del dispositivo CUDA seleccionado (también su partición MIG),
    empieza con hasta `fold_parallel_workers` folds si caben y aumenta de uno en uno
    cuando queda margen para otro fold además de la reserva. Presupuesta también

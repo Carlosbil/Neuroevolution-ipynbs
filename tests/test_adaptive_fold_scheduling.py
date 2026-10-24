@@ -11,6 +11,14 @@ from neuroevolution.evolution import engine, fitness, fold_scheduler
 from neuroevolution.evolution.fold_scheduler import GIB, VramFoldScheduler, is_cuda_memory_error
 
 
+def adaptive_config(**overrides):
+    # Exercise automatic concurrency independently of experiment defaults.
+    config = get_default_config()
+    config.update(fold_auto_workers=True, fold_parallel_workers=3, fold_auto_max_workers=10)
+    config.update(overrides)
+    return config
+
+
 def test_admission_observes_reserve_cost_growth_interval_and_backoff(monkeypatch):
     now = [0.0]
     free = [40 * GIB]
@@ -18,7 +26,7 @@ def test_admission_observes_reserve_cost_growth_interval_and_backoff(monkeypatch
     monkeypatch.setattr(fold_scheduler.time, 'monotonic', lambda: now[0])
     monkeypatch.setattr(torch.cuda, 'mem_get_info', lambda device: (free[0], 48 * GIB))
     monkeypatch.setattr(torch.cuda, 'memory_allocated', lambda device: allocated[0])
-    config = {**get_default_config(), 'fold_parallel_workers': 1}
+    config = adaptive_config(fold_parallel_workers=1)
     scheduler = VramFoldScheduler(config, torch.device('cuda'))
     scheduler.update(0)
     assert scheduler.admit(0)
@@ -48,7 +56,7 @@ def test_admission_observes_reserve_cost_growth_interval_and_backoff(monkeypatch
 def test_initial_workers_are_budgeted_before_their_allocations_become_visible(monkeypatch):
     monkeypatch.setattr(torch.cuda, 'memory_allocated', lambda device: 0)
     monkeypatch.setattr(torch.cuda, 'mem_get_info', lambda device: (14 * GIB, 48 * GIB))
-    scheduler = VramFoldScheduler(get_default_config(), torch.device('cuda'))
+    scheduler = VramFoldScheduler(adaptive_config(), torch.device('cuda'))
     scheduler.update(0)
     assert scheduler.limit == 3
     assert scheduler.admit(0)
@@ -68,7 +76,7 @@ def test_large_architecture_estimate_expires_for_later_small_models(monkeypatch)
     monkeypatch.setattr(fold_scheduler.time, 'monotonic', lambda: now[0])
     monkeypatch.setattr(torch.cuda, 'memory_allocated', lambda device: allocated[0])
     monkeypatch.setattr(torch.cuda, 'mem_get_info', lambda device: (free[0], 48 * GIB))
-    scheduler = VramFoldScheduler(get_default_config(), torch.device('cuda'))
+    scheduler = VramFoldScheduler(adaptive_config(), torch.device('cuda'))
     scheduler.update(0)
     allocated[0], free[0] = 24 * GIB, 24 * GIB
     scheduler.update(1)
@@ -86,7 +94,7 @@ def test_large_architecture_estimate_expires_for_later_small_models(monkeypatch)
 def test_low_memory_does_not_cancel_active_folds_or_deadlock_queue(monkeypatch):
     monkeypatch.setattr(torch.cuda, 'memory_allocated', lambda device: 0)
     monkeypatch.setattr(torch.cuda, 'mem_get_info', lambda device: (GIB, 48 * GIB))
-    scheduler = VramFoldScheduler(get_default_config(), torch.device('cuda'))
+    scheduler = VramFoldScheduler(adaptive_config(), torch.device('cuda'))
     scheduler.limit = 4
     scheduler.update(4)
     assert scheduler.limit == 3
@@ -100,7 +108,7 @@ def test_telemetry_failure_falls_back_to_one_fold(monkeypatch):
     def unavailable(device):
         raise RuntimeError('telemetry unavailable')
     monkeypatch.setattr(torch.cuda, 'mem_get_info', unavailable)
-    scheduler = VramFoldScheduler(get_default_config(), torch.device('cuda'))
+    scheduler = VramFoldScheduler(adaptive_config(), torch.device('cuda'))
     scheduler.limit = 3
     scheduler.update(2)
     assert scheduler.limit == 1
@@ -123,6 +131,7 @@ def test_memory_error_classification(message, expected):
 def _evolution(tmp_path, **overrides):
     config = get_default_config(info_path=str(tmp_path))
     config.update({'num_folds': 2, 'fold_auto_growth_interval_s': 0.001,
+                   'fold_auto_workers': True, 'fold_parallel_workers': 3,
                    'fold_auto_max_workers': 3, **overrides})
     evolution = engine.HybridNeuroevolution(config, torch.device('cuda'))
     evolution.population = [{'id': f'g{i}', 'optimizer': 'adam', 'learning_rate': 0.001}

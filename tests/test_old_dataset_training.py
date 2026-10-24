@@ -113,7 +113,7 @@ def test_notebook_loads_variable_fold_sizes_and_real_only_global_test(tmp_path):
     namespace['best_genome'] = {'id': 'already-selected', 'fitness': 75.0}
     exec(''.join(notebook['cells'][7]['source']), namespace)
     # Only load final data; never launch architecture search or final training in a unit test.
-    source = ''.join(notebook['cells'][19]['source']).split('final_test_results = evaluate_single_fold')[0]
+    source = ''.join(notebook['cells'][19]['source']).split('N_FINAL_RUNS =')[0]
     exec(source, namespace)
     assert len(namespace['final_train_loader'].dataset) == 140
     assert len(namespace['final_val_loader'].dataset) == 20

@@ -235,6 +235,7 @@ def test_real_evolution_trains_complete_network_and_resumes_without_config_mutat
                   max_fc_layers=1, num_epochs=2, epoch_patience=2,
                   batch_size=4, fold_parallel_workers=1, fold_cache_mode='none',
                   architecture_template_ids=['lenet5'],
+                  reference_injection_schedule=None,
                   random_immigrant_fraction=0.2, reference_injection_fraction=0.2,
                   use_amp=False, dataloader_pin_memory=False)
     before = copy.deepcopy(config)

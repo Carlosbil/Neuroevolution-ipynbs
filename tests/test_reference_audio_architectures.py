@@ -52,25 +52,24 @@ def test_audio_families_forward_with_real_temporal_weights(architecture_id):
     assert seen and set(seen) == {3}
 
 
-def test_default_audio_population_contains_googlenet_and_injects_more_references(tmp_path):
+def test_default_audio_population_starts_custom_and_introduces_googlenet_at_g10(tmp_path):
     config = {**get_default_config(str(tmp_path)), 'input_modality': 'audio',
               'resume_evolution': False}
     validate_config(config)
-    assert [template.template_id for template in get_configured_templates(config)] == list(REFERENCE_ARCHITECTURE_IDS)
+    assert [template.template_id for template in get_configured_templates(config)] == config['architecture_template_ids']
     evolution = HybridNeuroevolution(config, torch.device('cpu'))
     evolution.initialize_population()
     references = [g for g in evolution.population if g.get('model_kind') == 'reference']
-    assert len(references) == 7
-    assert 'googlenet' in {g['reference_architecture_id'] for g in references}
-    assert all(g['reference_dimensions'] == 1 for g in references)
+    assert not references
     for index, genome in enumerate(evolution.population):
         genome['fitness'] = 50 + index
         genome['metrics'] = {'f1_score': 50 + index}
-    evolution.generation = 1
+    evolution.generation = 10
     evolution.selection_and_reproduction()
     injected = [g for g in evolution.population if g.get('architecture_template_origin') == 'initial_seed'
                 and not g.get('skip_next_evaluation')]
-    assert len(injected) >= 2
+    assert len(injected) == 1
+    assert injected[0]['reference_architecture_id'] == 'googlenet'
     assert all(g['reference_dimensions'] == 1 for g in injected)
 
 

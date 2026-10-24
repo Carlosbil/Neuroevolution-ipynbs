@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 import torch
 
 from neuroevolution.evolution import fitness as fitness_module
@@ -81,7 +82,8 @@ def test_load_fold_loaders_keeps_validation_and_test_separate(tmp_path):
     assert _all_targets(loaders.test) == [0]
 
 
-def test_final_evaluation_reports_held_out_test_metrics(monkeypatch):
+@pytest.mark.parametrize('return_predictions', [False, True])
+def test_final_evaluation_reports_held_out_test_metrics(monkeypatch, return_predictions):
     monkeypatch.setattr(cross_validation, "EvolvableCNN", SignModel)
 
     train_loader = _loader([[-1.0], [1.0]], [0, 1])
@@ -97,12 +99,20 @@ def test_final_evaluation_reports_held_out_test_metrics(monkeypatch):
         fold_num=1,
         device=torch.device("cpu"),
         num_epochs=1,
+        return_predictions=return_predictions,
     )
 
     assert result["selection_split"] == "validation"
     assert result["evaluation_split"] == "test"
     assert result["n_samples"] == 1
     assert result["accuracy"] == 100.0
+    if return_predictions:
+        assert result['test_predictions']['y_true'] == [1]
+        assert result['test_predictions']['y_pred'] == [1]
+        assert len(result['test_predictions']['y_prob']) == 1
+        assert 0.5 < result['test_predictions']['y_prob'][0] < 1
+    else:
+        assert 'test_predictions' not in result
 
 
 def test_checkpoint_selection_score_defaults_to_f1_score():

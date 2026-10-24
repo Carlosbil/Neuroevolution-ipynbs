@@ -65,6 +65,7 @@ def small_config(**overrides):
             "inception_mutation_weight": 0.0,
             "architecture_template_seed_fraction": 0.0,
             "architecture_template_mutation_weight": 0.0,
+            "reference_injection_schedule": None,
             "architecture_template_seed_min_random_fraction": 0.5,
             "architecture_template_ids": list(EXPANDED_DEFAULT_TEMPLATE_IDS),
             "architecture_template_max_attempts": 5,
@@ -110,7 +111,10 @@ def test_template_registry_filters_configured_ids_and_rejects_unknown_templates(
     assert registry["googlenet_inception_conv1d_small"].conv_topology == "inception"
 
     default_config = get_default_config()
-    assert default_config["architecture_template_ids"] == list(REFERENCE_ARCHITECTURE_IDS)
+    assert set(default_config["architecture_template_ids"]) <= set(REFERENCE_ARCHITECTURE_IDS)
+    assert default_config["architecture_template_ids"] == [
+        "googlenet", "efficientnet_b0", "resnet18", "mobilenet_v3_large", "vgg13_bn",
+    ]
 
     config = small_config(architecture_template_ids=["resnet_conv1d_small"])
     configured = get_configured_templates(config)

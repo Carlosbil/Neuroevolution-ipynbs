@@ -26,7 +26,10 @@ import torch
 import torch.nn as nn
 from typing import Dict, Optional
 
-from ..config import get_data_phase_config, resolve_config, get_operator_config, with_fold_progress_callback
+from ..config import (
+    get_data_phase_config, resolve_config, get_operator_config,
+    reference_injection_fraction_for_generation, with_fold_progress_callback,
+)
 from ..genetics.genome import create_random_genome
 from ..genetics.architecture_templates import (
     choose_template,
@@ -264,6 +267,15 @@ class HybridNeuroevolution:
             self.current_mutation_rate = runtime_state.get('current_mutation_rate', self.current_mutation_rate)
             self.current_max_conv_layers = runtime_state.get('current_max_conv_layers', self.current_max_conv_layers)
             self.current_max_fc_layers = runtime_state.get('current_max_fc_layers', self.current_max_fc_layers)
+            mutation_keys = ('base_mutation_rate', 'mutation_rate_min', 'mutation_rate_max',
+                             'adaptive_mutation_strength', 'mutation_stagnation_boost')
+            if any(saved_config.get(key) != self.config[key] for key in mutation_keys):
+                # A saved runtime rate must not override a new search policy.
+                self._update_adaptive_mutation()
+            self.current_mutation_rate = max(
+                self.config['mutation_rate_min'],
+                min(self.config['mutation_rate_max'], self.current_mutation_rate),
+            )
             if self.best_checkpoint_path:
                 local_checkpoint = os.path.join(self.run_artifacts_dir, portable_basename(self.best_checkpoint_path))
                 if os.path.isfile(local_checkpoint):
@@ -361,6 +373,10 @@ class HybridNeuroevolution:
         if regular_population_size <= 0:
             return 0
 
+        if self.config.get('reference_injection_schedule') is not None:
+            fraction = reference_injection_fraction_for_generation(self.config, self.generation)
+            return min(regular_population_size, int(self.config['population_size'] * fraction))
+
         seed_fraction = float(self.config.get('architecture_template_seed_fraction', 0.0))
         if seed_fraction <= 0:
             return 0
@@ -410,6 +426,7 @@ class HybridNeuroevolution:
                     origin='initial_seed',
                     event_payload={
                         'index_in_population': int(index_in_population),
+                        'generation': int(self.generation),
                         'quartile': int(quartile_number),
                         'conv_cap': int(conv_quartile_cap),
                         'fc_cap': int(fc_quartile_cap),
@@ -1156,7 +1173,8 @@ class HybridNeuroevolution:
         for _ in range(max(0, immigrant_count)):
             new_population.append(create_random_genome(operator_config))
         templates = get_configured_templates(self.config)
-        reference_count = min(size - len(new_population) - 1, int(size * self.config['reference_injection_fraction'])) if templates else 0
+        reference_fraction = reference_injection_fraction_for_generation(self.config, self.generation)
+        reference_count = min(size - len(new_population) - 1, int(size * reference_fraction)) if templates else 0
         for _ in range(max(0, reference_count)):
             new_population.append(self._create_template_seed_individual(operator_config, len(new_population), 0, self.current_max_conv_layers, self.current_max_fc_layers))
         # One explicit growth probe, separate from immigrants and full models.
@@ -1170,7 +1188,16 @@ class HybridNeuroevolution:
                 survivors = sorted(members, key=lambda individual: pareto_selection_key(individual, self.config))[:max(1, int(np.ceil(len(members) * self.config['species_survival_rate'])))]
             else:
                 survivors = self.population
-            parents = [select_tournament(survivors, self.config, self.config['tournament_size']) for _ in range(2)]
+                members = self.population
+            first_parent = select_tournament(survivors, self.config, self.config['tournament_size'])
+            mate_pool = [candidate for candidate in survivors if candidate['id'] != first_parent['id']]
+            if not mate_pool:
+                mate_pool = [candidate for candidate in members if candidate['id'] != first_parent['id']]
+            if not mate_pool:
+                # A singleton species can still recombine with another lineage.
+                mate_pool = [candidate for candidate in self.population if candidate['id'] != first_parent['id']]
+            second_parent = select_tournament(mate_pool, self.config, self.config['tournament_size']) if mate_pool else first_parent
+            parents = (first_parent, second_parent)
             for child in crossover_genomes(*parents, operator_config):
                 if len(new_population) < size:
                     new_population.append(mutate_genome(child, operator_config))
@@ -1327,6 +1354,7 @@ class HybridNeuroevolution:
             f"mutation_weight={self.config.get('architecture_template_mutation_weight', 0.0)}, "
             f"ids={self.config.get('architecture_template_ids', [])}"
         )
+        print(f"   Reference injection schedule (generation, fraction): {self.config.get('reference_injection_schedule')}")
         print(f"   Device: {self.device}")
         print("="*80)
         

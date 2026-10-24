@@ -147,7 +147,47 @@ def get_operator_config(config: dict, generation: int, mutation_rate: float,
         'current_max_conv_layers': min(config['max_conv_layers'], config['initial_max_conv_layers'] + stage) if conv_cap is None else conv_cap,
         'current_max_fc_layers': min(config['max_fc_layers'], config['initial_max_fc_layers'] + stage) if fc_cap is None else fc_cap,
     })
+    if config.get('reference_injection_schedule') is not None:
+        # Scheduled injections are the only source of new template lineages.
+        runtime['architecture_template_mutation_weight'] = 0.0
     return runtime
+
+
+def reference_injection_fraction_for_generation(config: dict, generation: int) -> float:
+    """Resolve the stage for the population being built (generations start at 0).
+
+    None retains the legacy constant fraction. Scheduled quotas govern newly
+    injected templates, not descendants or elites of earlier references.
+    """
+    if generation < 0:
+        raise ValueError('generation must be non-negative')
+    schedule = config.get('reference_injection_schedule')
+    if schedule is None:
+        return float(config['reference_injection_fraction'])
+    _validate_reference_injection_schedule(schedule)
+    fraction = 0.0
+    for start, stage_fraction in schedule:
+        if generation < start:
+            break
+        fraction = float(stage_fraction)
+    return fraction
+
+
+def _validate_reference_injection_schedule(schedule) -> None:
+    if not isinstance(schedule, (list, tuple)) or not schedule:
+        raise ValueError('reference_injection_schedule must be a non-empty sequence or None')
+    previous_start = -1
+    for stage in schedule:
+        if not isinstance(stage, (list, tuple)) or len(stage) != 2:
+            raise ValueError('reference_injection_schedule stages must be (generation, fraction) pairs')
+        start, fraction = stage
+        if isinstance(start, bool) or not isinstance(start, int) or start < 0 or start <= previous_start:
+            raise ValueError('reference_injection_schedule generations must be non-negative, increasing integers')
+        if not isinstance(fraction, (int, float)) or not np.isfinite(fraction) or not 0 <= fraction <= 1:
+            raise ValueError('reference_injection_schedule fractions must be finite and in [0, 1]')
+        previous_start = start
+    if schedule[0][0] != 0:
+        raise ValueError('reference_injection_schedule must start at generation 0')
 
 
 def with_fold_progress_callback(config: dict, callback) -> dict:
@@ -266,10 +306,13 @@ def get_default_config(info_path: str = None) -> dict:
         'resume_evolution': True,
         'speciation_enabled': True,
         'species_elite_fraction': 0.15,
-        'random_immigrant_fraction': 0.10,
+        'random_immigrant_fraction': 0.05,
+        # Set the schedule to None to use the legacy constant fraction instead.
         'reference_injection_fraction': 0.10,
+        # Population 10: no references in G0-G9, one in G10-G19, two from G20.
+        'reference_injection_schedule': [(0, 0.0), (10, 0.10), (20, 0.20)],
         'adaptive_mutation_strength': 0.4,
-        'mutation_stagnation_boost': 0.15,
+        'mutation_stagnation_boost': 0.05,
         'conv_dropout_rate': 0.1,
         'activation_options': ['relu', 'leaky_relu', 'tanh'],
         'tournament_size': 3,
@@ -318,15 +361,15 @@ def get_default_config(info_path: str = None) -> dict:
         # Every individual contributes five folds to one global work queue.
         # Search-quality preset: more independent candidates and a long enough
         # horizon for speciation and incremental growth to produce useful variants.
-        'population_size': 20,
+        'population_size': 10,
         'max_generations': 100,
         'fitness_threshold': 100.0,
         
         # Adaptive mutation parameters
-        'base_mutation_rate': 0.20,
+        'base_mutation_rate': 0.15,
         'mutation_rate_min': 0.05,
-        'mutation_rate_max': 0.50,
-        'current_mutation_rate': 0.20,
+        'mutation_rate_max': 0.30,
+        'current_mutation_rate': 0.15,
         # Prevent late generations from making destructive, very large depth jumps.
         'structural_mutation_generation_factor': 0.03,
         
@@ -469,10 +512,13 @@ def get_default_config(info_path: str = None) -> dict:
 
         # Complete reference networks are independent of random-genome caps.
         # Legacy reduced Conv1D IDs remain loadable, but are not default seeds.
-        'architecture_template_seed_fraction': 0.40,
-        'architecture_template_mutation_weight': 0.05,
+        'architecture_template_seed_fraction': 0.0,
+        'architecture_template_mutation_weight': 0.0,
         # Complete 1D copies for waveforms; original 2D graphs for spectrograms.
-        'architecture_template_ids': list(REFERENCE_ARCHITECTURE_IDS),
+        # Focus on the five leading families; all 37 remain in the registry.
+        'architecture_template_ids': [
+            'googlenet', 'efficientnet_b0', 'resnet18', 'mobilenet_v3_large', 'vgg13_bn',
+        ],
         'architecture_template_seed_min_random_fraction': 0.50,
         'architecture_template_max_attempts': 20,
         
@@ -504,6 +550,8 @@ def validate_config(config: dict) -> None:
     Raises:
         ValueError: If configuration is invalid
     """
+    if config.get('reference_injection_schedule') is not None:
+        _validate_reference_injection_schedule(config['reference_injection_schedule'])
     for key in ('species_elite_fraction', 'random_immigrant_fraction', 'reference_injection_fraction', 'species_survival_rate'):
         if not 0 <= float(config[key]) <= 1:
             raise ValueError(f"{key} must be in [0, 1]")

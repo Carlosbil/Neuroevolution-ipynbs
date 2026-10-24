@@ -103,6 +103,8 @@ def _evaluate_loader_metrics(
     model: nn.Module,
     loader: torch.utils.data.DataLoader,
     device: torch.device,
+    *,
+    return_predictions: bool = False,
 ) -> Dict[str, Any]:
     """Evaluate one explicit loader and retain the data needed for reporting."""
     model.eval()
@@ -125,6 +127,10 @@ def _evaluate_loader_metrics(
     metrics = compute_classification_metrics(targets, predictions, probabilities)
     metrics['confusion_matrix'] = confusion_matrix(targets, predictions)
     metrics['n_samples'] = len(targets)
+    if return_predictions:
+        metrics['test_predictions'] = {
+            'y_true': targets, 'y_pred': predictions, 'y_prob': probabilities,
+        }
     return metrics
 
 
@@ -337,7 +343,9 @@ def evaluate_single_fold(
     fold_test_loader: torch.utils.data.DataLoader,
     fold_num: int,
     device: torch.device,
-    num_epochs: Optional[int] = None
+    num_epochs: Optional[int] = None,
+    *,
+    return_predictions: bool = False,
 ) -> Dict[str, Any]:
     """
     Train one fold with validation selection and evaluate once on held-out test.
@@ -351,6 +359,7 @@ def evaluate_single_fold(
         fold_num: Fold number (1-5).
         device: Device to train/evaluate on.
         num_epochs: Max epochs for this fold.
+        return_predictions: Include per-audio test targets, labels and probabilities.
 
     Returns:
         Dictionary with fold metrics and metadata.
@@ -452,7 +461,7 @@ def evaluate_single_fold(
         print("\n   ⚠ Usando modelo final (no se encontró mejora)")
 
     print("Evaluando con el mejor modelo sobre test held-out...")
-    test_metrics = _evaluate_loader_metrics(model, fold_test_loader, device)
+    test_metrics = _evaluate_loader_metrics(model, fold_test_loader, device, return_predictions=return_predictions)
     if best_selection_metrics is None:
         best_selection_metrics = _evaluate_loader_metrics(model, fold_validation_loader, device)
         best_selection_score = metric_value(best_selection_metrics, selection_metric)
@@ -465,7 +474,7 @@ def evaluate_single_fold(
     print(f"   F1-Score:     {test_metrics['f1_score']:.2f}%")
     print(f"   AUC:          {test_metrics['auc']:.2f}%")
 
-    return {
+    results = {
         "fold": fold_num,
         "accuracy": test_metrics["accuracy"],
         "sensitivity": test_metrics["sensitivity"],
@@ -485,6 +494,9 @@ def evaluate_single_fold(
         "checkpoint_metric": config.get("checkpoint_metric", config.get("fitness_metric", "f1_score")),
         "best_validation_score": float(best_selection_score),
     }
+    if return_predictions:
+        results["test_predictions"] = test_metrics["test_predictions"]
+    return results
 
 
 def evaluate_5fold_cross_validation(
